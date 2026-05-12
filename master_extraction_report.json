@@ -1,0 +1,45 @@
+{
+  "source_file": "master(1).mdb",
+  "generated_at": "2026-05-12T22:55:57",
+  "table_counts": {
+    "card_data": 203,
+    "card_rarity_data": 633,
+    "support_card_data": 445,
+    "single_mode_hint_gain": 3837,
+    "skill_data": 1639,
+    "available_skill_set": 1407,
+    "text_data": 75788
+  },
+  "outputs": {
+    "character_aptitude_rows": 201,
+    "card_data_without_card_rarity_data": 2,
+    "support_card_rows": 445,
+    "support_hint_detail_rows": 2898,
+    "support_cards_with_no_hint_skill": 25,
+    "character_available_skill_rows": 203,
+    "character_available_skill_detail_rows": 1407
+  },
+  "notes": [
+    "적성 숫자는 1=G, 2=F, 3=E, 4=D, 5=C, 6=B, 7=A, 8=S로 변환했다.",
+    "card_rarity_data의 적성값은 같은 card_id 안에서 rarity 3/4/5가 동일하여 card_id별 1행으로 축약했다.",
+    "서포트카드 힌트 스킬은 support_card_data.skill_set_id = single_mode_hint_gain.hint_id 및 support_card_data.id = single_mode_hint_gain.support_card_id 조건으로 추출했다.",
+    "single_mode_hint_gain.hint_gain_type=0만 스킬 힌트로 보고, hint_gain_type=1은 스탯/기타 힌트로 제외했다.",
+    "available_skill_set.need_rank=0은 기본 보유, 2~5는 각성 Lv.2~5로 분류했다."
+  ],
+  "card_without_rarity": [
+    {
+      "card_id": 9100101,
+      "chara_id": 1001,
+      "fullName": "[스페셜 드리머] 스페셜 위크",
+      "charaName": "스페셜 위크",
+      "reason": "card_rarity_data에 해당 card_id 없음"
+    },
+    {
+      "card_id": 9101101,
+      "chara_id": 1011,
+      "fullName": "[바위 뚫는 파랑] 그래스 원더",
+      "charaName": "그래스 원더",
+      "reason": "card_rarity_data에 해당 card_id 없음"
+    }
+  ]
+}
