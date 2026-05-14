@@ -175,13 +175,14 @@
     .uma-card select.char-select { height:30px; font-size:11px; padding:5px 6px; border-radius:9px; }
     .apt-mini { display:grid; grid-template-columns: repeat(4, 1fr); gap:3px; }
     .apt-cell { background:#fff; border-radius:5px; min-height:32px; display:flex; flex-direction:column; align-items:center; justify-content:center; line-height:1.05; border:1px solid rgba(0,0,0,.05); }
-    .apt-cell.surface { grid-column: span 2; }
     .apt-label { font-size:11px; font-weight:800; color:#111827; }
     .apt-rank { font-size:13px; font-weight:900; margin-top:3px; color:#111827; }
     .apt-cell.changed { background:#ff0080; color:#fff; }
     .apt-cell.changed .apt-label, .apt-cell.changed .apt-rank { color:#fff; }
     .apt-cell.red-factor { outline:2px solid #f59e0b; }
     .apt-cell.weak { background:#f5f5f5; color:#6b7280; }
+    .apt-cell.changed.weak { background:#ff0080; color:#fff; }
+    .apt-cell.changed.weak .apt-label, .apt-cell.changed.weak .apt-rank { color:#fff; }
     .uma-name { margin-top:6px; font-size:11px; font-weight:900; text-align:center; color:#166534; min-height:18px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .red-factor-bar { margin-top:6px; border-radius:9px; padding:5px; background:#f7f7f8; }
     .red-factor-bar .row { gap:4px; }
@@ -358,7 +359,7 @@
             <button class="btn ghost" id="factorImportBtn">JSON 불러오기</button>
           </div>
           <textarea id="factorImportText" placeholder="여기에 설계 JSON을 붙여넣고 JSON 불러오기를 누르세요" style="margin-top:10px; min-height:90px;"></textarea>
-          <p class="hint">적인자는 각 계보 카드 아래에서 직접 입력해. 합산 별 수에 따라 본육성 대상의 적성이 상승하면 분홍색으로 표시돼.</p>
+          <p class="hint">적인자는 각 계보 카드 아래에서 직접 입력해. 합산 별 수에 따라 본육성·부모·조부모의 적성이 상승하면 각 카드에서 분홍색으로 표시돼.</p>
         </aside>
 
         <div class="result-list">
@@ -1319,11 +1320,23 @@
     function inheritedApt(baseRank, stars) {
       return aptFromIdx(aptIdx(baseRank) + redStarStep(stars));
     }
-    function redTotalsByType() {
+    const FACTOR_ANCESTOR_SLOTS = {
+      target: ['p1','p2','gp1a','gp1b','gp2a','gp2b','ggp1a1','ggp1a2','ggp1b1','ggp1b2','ggp2a1','ggp2a2','ggp2b1','ggp2b2'],
+      p1: ['gp1a','gp1b','ggp1a1','ggp1a2','ggp1b1','ggp1b2'],
+      p2: ['gp2a','gp2b','ggp2a1','ggp2a2','ggp2b1','ggp2b2'],
+      gp1a: ['ggp1a1','ggp1a2'],
+      gp1b: ['ggp1b1','ggp1b2'],
+      gp2a: ['ggp2a1','ggp2a2'],
+      gp2b: ['ggp2b1','ggp2b2'],
+      ggp1a1: [], ggp1a2: [], ggp1b1: [], ggp1b2: [],
+      ggp2a1: [], ggp2a2: [], ggp2b1: [], ggp2b2: []
+    };
+    function redTotalsByType(slotIds=null) {
       const totals = {};
       FACTOR_TYPES.forEach(t => totals[t] = 0);
-      FACTOR_SLOT_DEFS.forEach(d => {
-        const s = slotValue(d.id);
+      const ids = slotIds || FACTOR_SLOT_DEFS.map(d => d.id);
+      ids.forEach(id => {
+        const s = slotValue(id);
         if (s.redType) totals[s.redType] = (totals[s.redType] || 0) + Number(s.stars || 0);
       });
       return totals;
@@ -1332,12 +1345,21 @@
       const target = factorChar(factorBlueprint.target);
       return target?.apt || {};
     }
-    function finalAptByInheritance() {
-      const base = targetBaseApt();
-      const totals = redTotalsByType();
+    function baseAptForNode(slotId) {
+      const id = slotId === 'target' || !slotId ? factorBlueprint.target : slotValue(slotId).charaId;
+      const c = factorChar(id);
+      return c?.apt || {};
+    }
+    function finalAptForNode(slotId='target') {
+      const base = baseAptForNode(slotId);
+      const ancestorIds = FACTOR_ANCESTOR_SLOTS[slotId || 'target'] || [];
+      const totals = redTotalsByType(ancestorIds);
       const out = {};
       FACTOR_TYPES.forEach(t => out[t] = inheritedApt(base[t] || 'G', totals[t] || 0));
       return out;
+    }
+    function finalAptByInheritance() {
+      return finalAptForNode('target');
     }
     function renderAptMini(apt={}, opts={}) {
       const redType = opts.redType || '';
@@ -1349,14 +1371,14 @@
         const changed = final && rank !== baseRank;
         const red = redType === t;
         const weak = ['F','G','-'].includes(rank);
-        return `<div class="apt-cell ${FACTOR_TYPES.indexOf(t)<2?'surface':''} ${changed?'changed':''} ${red?'red-factor':''} ${weak?'weak':''}" title="${t}: ${baseRank}${changed?' → '+rank:''}"><span class="apt-label">${aptShort(t)}</span><span class="apt-rank">${rank}</span></div>`;
+        return `<div class="apt-cell ${changed?'changed':''} ${red?'red-factor':''} ${weak?'weak':''}" title="${t}: ${baseRank}${changed?' → '+rank:''}"><span class="apt-label">${aptShort(t)}</span><span class="apt-rank">${rank}</span></div>`;
       }).join('')}</div>`;
     }
     function renderUmaCard(slotId, label, gen, isTarget=false) {
       const s = isTarget ? {charaId:factorBlueprint.target, redType:'', stars:0} : slotValue(slotId);
       const c = factorChar(s.charaId);
       const baseApt = c?.apt || {};
-      const finalApt = isTarget ? finalAptByInheritance() : null;
+      const finalApt = finalAptForNode(isTarget ? 'target' : slotId);
       const title = c?.name || '선택 안 함';
       const cls = isTarget ? 'target' : (c ? '' : 'empty');
       const charSelect = isTarget
