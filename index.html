@@ -2389,5 +2389,374 @@
 })();
 </script>
 
+<script>
+/* 인자 설계 추천 패치 v2: 사용자가 부모/조부모 6칸을 직접 지정하고, 증조/고조부모만 자동 보조 */
+(function(){
+  const css = `
+    .gene-advisor-box { margin:16px 0 18px; padding:12px; border:1px solid var(--line); border-radius:18px; background:linear-gradient(180deg,#fff,#f8fafc); }
+    .gene-advisor-box h3 { margin-top:0; }
+    .gene-advisor-goals { display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:8px; margin:8px 0 10px; }
+    .gene-advisor-goals label, .gene-core-picks label { font-size:12px; font-weight:900; color:#374151; margin:0 0 4px; }
+    .gene-core-picks { margin:10px 0 10px; padding:10px; border:1px dashed #bfdbfe; border-radius:16px; background:#f8fbff; }
+    .gene-core-picks-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:8px; }
+    .gene-core-picks-title { font-weight:900; color:#111827; }
+    .gene-core-picks-grid { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:8px; }
+    .gene-core-picks select { width:100%; min-width:0; }
+    .gene-core-picks .meta { font-size:11px; color:#6b7280; line-height:1.35; }
+    .gene-advisor-buttons { display:grid; grid-template-columns:1fr; gap:7px; }
+    .gene-advisor-buttons .btn { width:100%; justify-content:center; }
+    .gene-advisor-status { margin-top:10px; max-height:240px; overflow:auto; border-radius:14px; background:#fff; border:1px solid var(--line); padding:10px; font-size:12px; line-height:1.55; color:#374151; white-space:pre-wrap; }
+    .gene-advisor-status b { color:#111827; }
+    .gene-advisor-candidate-tools { grid-column:1 / -1; padding:10px; border:1px dashed #c7d2fe; border-radius:16px; background:#f8faff; }
+    .gene-advisor-candidate-tools .row { align-items:center; justify-content:space-between; }
+    .gene-advisor-warning { color:#991b1b; font-weight:800; }
+    .gene-advisor-ok { color:#166534; font-weight:900; }
+    @media (max-width: 760px){ .gene-advisor-goals, .gene-core-picks-grid { grid-template-columns:1fr; } }
+  `;
+  document.head.insertAdjacentHTML('beforeend', `<style>${css}</style>`);
+
+  const GROUND_TYPES = ['잔디','더트'];
+  const DIST_TYPES = ['단거리','마일','중거리','장거리'];
+  const STYLE_TYPES = ['도주','선행','선입','추입'];
+  const CORE_SLOTS = ['p1','p2','gp1a','gp1b','gp2a','gp2b'];
+  const GGP_SLOTS = ['ggp1a1','ggp1a2','ggp1b1','ggp1b2','ggp2a1','ggp2a2','ggp2b1','ggp2b2'];
+  const HIGH_SLOTS = ['h1','h2','h3','h4','h5','h6','h7','h8','h9','h10','h11','h12','h13','h14','h15','h16'];
+  const PLAN_SLOT_ORDER = [...CORE_SLOTS, ...GGP_SLOTS, ...HIGH_SLOTS];
+  const CORE_LABELS = {p1:'부모 A', p2:'부모 B', gp1a:'조부모 A-1', gp1b:'조부모 A-2', gp2a:'조부모 B-1', gp2b:'조부모 B-2'};
+  const BRANCH_MAP = {
+    p1:['p1','gp1a','gp1b'], p2:['p2','gp2a','gp2b'],
+    gp1a:['p1','gp1a'], gp1b:['p1','gp1b'], gp2a:['p2','gp2a'], gp2b:['p2','gp2b'],
+    ggp1a1:['p1','gp1a'], ggp1a2:['p1','gp1a'], ggp1b1:['p1','gp1b'], ggp1b2:['p1','gp1b'],
+    ggp2a1:['p2','gp2a'], ggp2a2:['p2','gp2a'], ggp2b1:['p2','gp2b'], ggp2b2:['p2','gp2b']
+  };
+  const HIGH_BRANCH = {
+    h1:['p1','gp1a','ggp1a1'], h2:['p1','gp1a','ggp1a1'], h3:['p1','gp1a','ggp1a2'], h4:['p1','gp1a','ggp1a2'],
+    h5:['p1','gp1b','ggp1b1'], h6:['p1','gp1b','ggp1b1'], h7:['p1','gp1b','ggp1b2'], h8:['p1','gp1b','ggp1b2'],
+    h9:['p2','gp2a','ggp2a1'], h10:['p2','gp2a','ggp2a1'], h11:['p2','gp2a','ggp2a2'], h12:['p2','gp2a','ggp2a2'],
+    h13:['p2','gp2b','ggp2b1'], h14:['p2','gp2b','ggp2b1'], h15:['p2','gp2b','ggp2b2'], h16:['p2','gp2b','ggp2b2']
+  };
+
+  function safe(fn, fallback){ try { return fn(); } catch(e){ console.warn(e); return fallback; } }
+  function rank(v){ return typeof aptValueRank === 'function' ? aptValueRank(v) : ({G:1,F:2,E:3,D:4,C:5,B:6,A:7,S:8}[v]||0); }
+  function shortType(t){ return typeof aptShort === 'function' ? aptShort(t) : t; }
+  function getChar(id){ return typeof factorChar === 'function' ? factorChar(id) : null; }
+  function nameOf(id){ return typeof factorName === 'function' ? (factorName(id)||'') : ''; }
+  function relation(ids){ return typeof commonRelationScore === 'function' ? commonRelationScore(ids.filter(Boolean)) : 0; }
+  function typeRank(ch, t){ return rank(ch?.apt?.[t] || 'G'); }
+  function typeLetter(ch, t){ return ch?.apt?.[t] || 'G'; }
+  function sv(id){ return typeof slotValue === 'function' ? slotValue(id) : (factorBlueprint?.slots?.[id]||{}); }
+  function slotLabel(slot){ return CORE_LABELS[slot] || ((FACTOR_SLOT_DEFS||[]).find(x=>x.id===slot)?.label || slot); }
+  function ensureSlots(){ if (typeof ensureFactorSlots === 'function') ensureFactorSlots(); }
+
+  function allCandidateChars(){
+    return (FACTOR_DATA?.chars || []).filter(c => c && c.hasRelation && String(c.id) !== String(factorBlueprint?.target));
+  }
+  function charOptions(selected=''){
+    const chars = (FACTOR_DATA?.chars || []).filter(c=>c && c.hasRelation).slice().sort((a,b)=>String(a.name).localeCompare(String(b.name),'ko'));
+    return `<option value="">선택 안 함</option>` + chars.map(c => `<option value="${c.id}" ${String(c.id)===String(selected)?'selected':''}>${c.name}</option>`).join('');
+  }
+  function goalBonus(ch, goals){
+    if (!ch) return 0;
+    return [goals.ground, goals.distance, goals.style].reduce((sum,t)=>sum + Math.max(0, typeRank(ch,t)-3)*12, 0);
+  }
+  function coreIssues(ch){
+    const issues = [];
+    if (!ch) return ['캐릭터 정보 없음'];
+    if (typeRank(ch,'더트') < rank('C')) issues.push(`더트 ${typeLetter(ch,'더트')}`);
+    ['마일','중거리','장거리'].forEach(t => { if (typeRank(ch,t) < rank('C')) issues.push(`${t} ${typeLetter(ch,t)}`); });
+    return issues;
+  }
+  function corePenalty(ch){
+    if (!ch) return 9999;
+    let p = 0;
+    if (typeRank(ch,'더트') < rank('C')) p += (rank('C') - typeRank(ch,'더트')) * 70;
+    ['마일','중거리','장거리'].forEach(t => { if (typeRank(ch,t) < rank('C')) p += (rank('C') - typeRank(ch,t)) * 45; });
+    return p;
+  }
+  function chooseBestType(types){
+    const target = getChar(factorBlueprint?.target);
+    const desired = Array.isArray(factorBlueprint?.desired) ? factorBlueprint.desired : [];
+    const desiredInGroup = types.filter(t => desired.includes(t));
+    const pool = desiredInGroup.length ? desiredInGroup : types;
+    return pool.map(t => ({t, r:typeRank(target,t)})).sort((a,b)=>b.r-a.r || types.indexOf(a.t)-types.indexOf(b.t))[0]?.t || types[0];
+  }
+  function ensureAdvisorDefaults(){
+    const ground = document.getElementById('geneAdvisorGround');
+    const dist = document.getElementById('geneAdvisorDistance');
+    const style = document.getElementById('geneAdvisorStyle');
+    if (ground && !ground.value) ground.value = chooseBestType(GROUND_TYPES);
+    if (dist && !dist.value) dist.value = chooseBestType(DIST_TYPES);
+    if (style && !style.value) style.value = chooseBestType(STYLE_TYPES);
+    syncCorePickSelectors(false);
+  }
+  function currentGoals(){
+    ensureAdvisorDefaults();
+    return {
+      ground: document.getElementById('geneAdvisorGround')?.value || chooseBestType(GROUND_TYPES),
+      distance: document.getElementById('geneAdvisorDistance')?.value || chooseBestType(DIST_TYPES),
+      style: document.getElementById('geneAdvisorStyle')?.value || chooseBestType(STYLE_TYPES)
+    };
+  }
+  function setStatus(lines){
+    const box = document.getElementById('geneAdvisorStatus');
+    if (!box) return;
+    box.innerHTML = Array.isArray(lines) ? lines.join('\n') : String(lines || '');
+  }
+  function makeOptions(types){ return types.map(t=>`<option value="${t}">${t}</option>`).join(''); }
+
+  function readCoreSelections(){
+    const out = {};
+    CORE_SLOTS.forEach(s => {
+      const el = document.getElementById(`geneCorePick_${s}`);
+      out[s] = el?.value || '';
+    });
+    return out;
+  }
+  function syncCorePickSelectors(fromSlots=true){
+    CORE_SLOTS.forEach(s => {
+      const el = document.getElementById(`geneCorePick_${s}`);
+      if (!el) return;
+      const v = fromSlots ? (sv(s).charaId || '') : el.value;
+      if (fromSlots && v && !el.value) el.value = String(v);
+    });
+  }
+  function refreshCorePickOptions(){
+    CORE_SLOTS.forEach(s => {
+      const el = document.getElementById(`geneCorePick_${s}`);
+      if (!el) return;
+      const cur = el.value;
+      el.innerHTML = charOptions(cur);
+      el.value = cur;
+    });
+  }
+  function validateCoreRules(selections){
+    const warnings = [];
+    const n = id => nameOf(id) || `ID ${id}`;
+    if (selections.p1 && selections.p2 && selections.p1 === selections.p2) warnings.push(`부모 A/B가 모두 ${n(selections.p1)}로 같음. 부모 양쪽 중복은 계승 제한에 걸릴 수 있음.`);
+    [['p1','gp1a','부모 A와 조부모 A-1'],['p1','gp1b','부모 A와 조부모 A-2'],['gp1a','gp1b','조부모 A-1/A-2'],['p2','gp2a','부모 B와 조부모 B-1'],['p2','gp2b','부모 B와 조부모 B-2'],['gp2a','gp2b','조부모 B-1/B-2']].forEach(([a,b,label])=>{
+      if (selections[a] && selections[b] && selections[a] === selections[b]) warnings.push(`${label}이 ${n(selections[a])}로 중복됨. 같은 부모 라인 중복은 피하는 편이 안전함.`);
+    });
+    // 양쪽 조부모 라인끼리 같은 캐릭터는 허용하되 안내만 약하게 표시
+    [['gp1a','gp2a'],['gp1a','gp2b'],['gp1b','gp2a'],['gp1b','gp2b']].forEach(([a,b])=>{
+      if (selections[a] && selections[b] && selections[a] === selections[b]) warnings.push(`${slotLabel(a)}와 ${slotLabel(b)}에 ${n(selections[a])}가 중복됨. 양쪽 조부모 라인 중복으로 쓰는 경우라면 허용 가능.`);
+    });
+    return warnings;
+  }
+  function pickCandidate(contextIds, goals, forbiddenIds=[]){
+    const forbidden = new Set(forbiddenIds.filter(Boolean).map(String));
+    const priorityNames = ['오구리 캡','엘 콘도르 파사','이나리 원','아그네스 디지털','마루젠스키','스마트 팔콘','유키노 비진'];
+    const pool = allCandidateChars().filter(c => !forbidden.has(String(c.id)));
+    const strict = pool.filter(c => coreIssues(c).length === 0);
+    const base = strict.length ? strict : pool;
+    const scored = base.map(c => {
+      const rel = relation([...contextIds, c.id]);
+      const targetRel = relation([factorBlueprint?.target, c.id]);
+      const priority = priorityNames.includes(c.name) ? 120 - priorityNames.indexOf(c.name)*8 : 0;
+      const score = rel * 4 + targetRel * 2 + goalBonus(c, goals) - corePenalty(c) + priority;
+      return {c, score, rel, issues: coreIssues(c)};
+    }).sort((a,b)=>b.score-a.score || b.rel-a.rel || String(a.c.name).localeCompare(String(b.c.name),'ko'));
+    return scored[0] || null;
+  }
+  function autoFillMissingCore(selections, goals){
+    const warnings = [];
+    CORE_SLOTS.forEach(slot => {
+      if (selections[slot]) return;
+      const context = slot.startsWith('gp1') ? [factorBlueprint.target, selections.p1] : slot.startsWith('gp2') ? [factorBlueprint.target, selections.p2] : [factorBlueprint.target];
+      const branchForbidden = (BRANCH_MAP[slot] || []).map(s => selections[s]).filter(Boolean);
+      const p = pickCandidate(context, goals, branchForbidden);
+      if (p) {
+        selections[slot] = String(p.c.id);
+        warnings.push(`${slotLabel(slot)}가 비어 있어 ${p.c.name}으로만 자동 보충했어.`);
+      }
+    });
+    return warnings;
+  }
+  function applyCoreSelections(goals){
+    ensureSlots();
+    const selections = readCoreSelections();
+    const warnings = [];
+    warnings.push(...autoFillMissingCore(selections, goals));
+    warnings.push(...validateCoreRules(selections));
+    CORE_SLOTS.forEach(slot => {
+      if (!selections[slot]) return;
+      factorBlueprint.slots[slot] = Object.assign({}, factorBlueprint.slots[slot] || {}, {charaId:String(selections[slot])});
+    });
+    syncCorePickSelectors(false);
+    CORE_SLOTS.forEach(slot => {
+      const c = getChar(selections[slot]);
+      const issues = coreIssues(c);
+      if (issues.length) warnings.push(`${slotLabel(slot)} ${c?.name || '-'}: ${issues.join(', ')} 때문에 완전 적성 조건이 약함`);
+    });
+    return warnings;
+  }
+  function fillDeepAncestors(goals){
+    const warnings = [];
+    const getForbid = slot => {
+      const branch = slot.startsWith('h') ? (HIGH_BRANCH[slot] || []) : (BRANCH_MAP[slot] || []);
+      return branch.map(s => sv(s).charaId).filter(Boolean);
+    };
+    GGP_SLOTS.forEach(slot => {
+      const context = getForbid(slot);
+      const p = pickCandidate(context, goals, getForbid(slot));
+      if (p) factorBlueprint.slots[slot] = Object.assign({}, factorBlueprint.slots[slot] || {}, {charaId:String(p.c.id)});
+      else warnings.push(`${slotLabel(slot)}에 넣을 보조 후보를 찾지 못했어.`);
+    });
+    HIGH_SLOTS.forEach(slot => {
+      const context = getForbid(slot);
+      const p = pickCandidate(context, goals, getForbid(slot));
+      if (p) factorBlueprint.slots[slot] = Object.assign({}, factorBlueprint.slots[slot] || {}, {charaId:String(p.c.id)});
+      else warnings.push(`${slotLabel(slot)}에 넣을 보조 후보를 찾지 못했어.`);
+    });
+    return warnings;
+  }
+  function applyRedPattern(mode, goals){
+    ensureSlots();
+    const clear = id => { factorBlueprint.slots[id] = Object.assign({}, factorBlueprint.slots[id] || {}, {redType:'', stars:0}); };
+    PLAN_SLOT_ORDER.forEach(clear);
+    function set(slot, type, stars=3){ factorBlueprint.slots[slot] = Object.assign({}, factorBlueprint.slots[slot] || {}, {redType:type, stars}); }
+    if (mode === 'distance') {
+      [...CORE_SLOTS, ...GGP_SLOTS, ...HIGH_SLOTS].forEach(s => set(s, goals.distance, 3));
+    } else if (mode === 'triple666') {
+      [['p1',goals.distance],['p2',goals.distance],['gp1a',goals.ground],['gp1b',goals.ground],['gp2a',goals.style],['gp2b',goals.style]].forEach(x=>set(x[0],x[1],3));
+      const cyc = [goals.distance, goals.ground, goals.style];
+      GGP_SLOTS.forEach((s,i)=>set(s,cyc[i%3],3));
+      HIGH_SLOTS.forEach((s,i)=>set(s,cyc[(i+1)%3],3));
+    } else if (mode === 'dist12ground6') {
+      [['p1',goals.distance],['p2',goals.distance],['gp1a',goals.distance],['gp1b',goals.distance],['gp2a',goals.ground],['gp2b',goals.ground]].forEach(x=>set(x[0],x[1],3));
+      const cyc = [goals.distance, goals.distance, goals.ground];
+      GGP_SLOTS.forEach((s,i)=>set(s,cyc[i%3],3));
+      HIGH_SLOTS.forEach((s,i)=>set(s,cyc[(i+1)%3],3));
+    }
+  }
+  function geneStarsFor(nodeId, aptitude){
+    const sourceMap = (typeof GENE_SOURCE_MAP2 !== 'undefined' ? GENE_SOURCE_MAP2 : null) || {
+      target:['p1','p2','gp1a','gp1b','gp2a','gp2b'],
+      p1:['gp1a','gp1b','ggp1a1','ggp1a2','ggp1b1','ggp1b2'],
+      p2:['gp2a','gp2b','ggp2a1','ggp2a2','ggp2b1','ggp2b2'],
+      gp1a:['ggp1a1','ggp1a2','h1','h2','h3','h4'], gp1b:['ggp1b1','ggp1b2','h5','h6','h7','h8'],
+      gp2a:['ggp2a1','ggp2a2','h9','h10','h11','h12'], gp2b:['ggp2b1','ggp2b2','h13','h14','h15','h16']
+    };
+    const ids = sourceMap[nodeId] || [];
+    return ids.reduce((sum,id)=> sum + ((sv(id).redType === aptitude) ? Number(sv(id).stars||0) : 0), 0);
+  }
+  function statusText(stars){
+    if (stars >= 12) return `${stars}★ 확정 100%`;
+    if (stars >= 6) return `${stars}★ 추첨 약 40%`;
+    return `${stars}★ 부족 ${6-stars}★`;
+  }
+  function targetAptWarnings(goals){
+    const t = getChar(factorBlueprint.target);
+    const lines = [];
+    if (!t) return ['본육성 캐릭터를 먼저 선택해야 함'];
+    [goals.ground, goals.distance, goals.style].forEach(g => {
+      const cur = t.apt?.[g] || 'G';
+      let needA = null;
+      try { needA = typeof requiredStarsForApt === 'function' ? requiredStarsForApt(cur, 'A') : null; } catch(e) {}
+      if (needA === null && rank(cur) < rank('A')) lines.push(`${t.name}의 ${g} 적성은 ${cur}라서 적인자 1회 계승만으로 A까지는 어려움. 중간 적성 보정 또는 유전자인자 발동을 전제로 설계해야 함.`);
+      else if (needA && needA > 0) lines.push(`${t.name}의 ${g} 적성은 ${cur}. A 시작을 노리려면 적인자 ${needA}★ 이상 필요.`);
+    });
+    return lines;
+  }
+  function summarizePlan(mode, goals, warnings){
+    const planName = mode === 'distance' ? '거리 몰빵' : mode === 'triple666' ? '6/6/6' : '거리 12 + 마장 6';
+    const top = [goals.ground, goals.distance, goals.style];
+    const geneLines = [];
+    ['target','p1','p2','gp1a','gp1b','gp2a','gp2b'].forEach(node => {
+      const label = node === 'target' ? '본육성' : slotLabel(node);
+      const bits = top.map(t => `${shortType(t)} ${statusText(geneStarsFor(node,t))}`).join(' / ');
+      geneLines.push(`${label}: ${bits}`);
+    });
+    const selectedNames = CORE_SLOTS.map(s => `${slotLabel(s)}=${nameOf(sv(s).charaId) || '-'}`).join(' · ');
+    const aptWarn = targetAptWarnings(goals);
+    const warnLines = [...aptWarn, ...(warnings||[])];
+    return [`<b>${planName} 추천안을 적용했어.</b>`, `목표: 마장 ${goals.ground} / 거리 ${goals.distance} / 각질 ${goals.style}`, `사용자 지정 부모/조부모: ${selectedNames}`, '', '<b>유전자인자 판정</b>', ...geneLines, '', warnLines.length ? '<b class="gene-advisor-warning">주의/보정 필요</b>' : '<b class="gene-advisor-ok">큰 적성 결손 없이 배치 완료</b>', ...(warnLines.length ? warnLines.slice(0,12).map(x=>'· '+x) : ['· 세부 상성/적성은 계보 카드와 상성점수에서 다시 확인해줘.']), '', '※ 6~11★ 확률은 약 40% / 검증 기반 추정값으로 표시.'];
+  }
+  function applyRecommendedPlan(mode){
+    if (!factorBlueprint?.target) { alert('본육성 캐릭터를 먼저 선택해줘.'); return; }
+    const goals = currentGoals();
+    let warnings = [];
+    warnings.push(...applyCoreSelections(goals));
+    warnings.push(...fillDeepAncestors(goals));
+    applyRedPattern(mode, goals);
+    if (factorBlueprint.view) factorBlueprint.view.showHigh = true;
+    if (typeof saveFactorBlueprint === 'function') saveFactorBlueprint();
+    if (typeof renderFactorPlanner === 'function') renderFactorPlanner();
+    setTimeout(()=>setStatus(summarizePlan(mode, goals, warnings)), 0);
+  }
+  function applyUserCoreOnly(){
+    if (!factorBlueprint?.target) { alert('본육성 캐릭터를 먼저 선택해줘.'); return; }
+    const goals = currentGoals();
+    const warnings = applyCoreSelections(goals);
+    if (typeof saveFactorBlueprint === 'function') saveFactorBlueprint();
+    if (typeof renderFactorPlanner === 'function') renderFactorPlanner();
+    const selectedNames = CORE_SLOTS.map(s => `${slotLabel(s)}=${nameOf(sv(s).charaId) || '-'}`).join('\n');
+    setTimeout(()=>setStatus([`<b>선택한 부모/조부모 6칸을 계보에 적용했어.</b>`, selectedNames, '', warnings.length?'<b class="gene-advisor-warning">주의</b>':'<b class="gene-advisor-ok">사용자 지정 6칸 적용 완료</b>', ...(warnings.length?warnings.slice(0,10).map(x=>'· '+x):['· 증조/고조부모와 적인자 세팅은 아래 추천안 버튼으로 적용해줘.'])]), 0);
+  }
+  function ensureGeneAdvisorUI(){
+    if (document.getElementById('geneAdvisorBox')) { refreshCorePickOptions(); return; }
+    const aside = document.querySelector('#factor aside.panel');
+    if (!aside) return;
+    const saveTitle = [...aside.querySelectorAll('h3')].find(h => h.textContent.includes('설계 저장'));
+    const box = document.createElement('div');
+    box.id = 'geneAdvisorBox';
+    box.className = 'gene-advisor-box';
+    box.innerHTML = `<h3>인자 설계 추천</h3>
+      <p class="hint">목표 마장/거리/각질을 정하고, 부모·조부모 6칸은 직접 지정해. 추천안 버튼은 이 6칸은 유지하고 증조/고조부모와 적인자를 자동 세팅해.</p>
+      <div class="gene-advisor-goals">
+        <div><label>마장</label><select id="geneAdvisorGround">${makeOptions(GROUND_TYPES)}</select></div>
+        <div><label>거리</label><select id="geneAdvisorDistance">${makeOptions(DIST_TYPES)}</select></div>
+        <div><label>각질</label><select id="geneAdvisorStyle">${makeOptions(STYLE_TYPES)}</select></div>
+      </div>
+      <div class="gene-core-picks">
+        <div class="gene-core-picks-head">
+          <div><div class="gene-core-picks-title">부모/조부모 6칸 지정</div><div class="meta">같은 캐릭터는 양쪽 조부모 라인 중복은 허용 가능. 같은 부모 라인 중복은 경고로 표시해.</div></div>
+          <button class="btn small ghost" id="geneApplyCoreBtn" type="button">6칸 적용</button>
+        </div>
+        <div class="gene-core-picks-grid">
+          ${CORE_SLOTS.map(s=>`<div><label>${slotLabel(s)}</label><select id="geneCorePick_${s}">${charOptions(sv(s).charaId||'')}</select></div>`).join('')}
+        </div>
+      </div>
+      <div class="gene-advisor-buttons">
+        <button class="btn" id="genePlanDistanceBtn">1. 거리 몰빵 제시</button>
+        <button class="btn secondary" id="genePlan666Btn">2. 6/6/6 제시</button>
+        <button class="btn ghost" id="genePlan126Btn">3. 거리 12 + 마장 6 제시</button>
+      </div>
+      <div id="geneAdvisorStatus" class="gene-advisor-status">부모/조부모 6칸을 고른 뒤 추천 버튼을 누르면 결과와 문제점을 여기 표시해.</div>`;
+    if (saveTitle) aside.insertBefore(box, saveTitle); else aside.appendChild(box);
+    ensureAdvisorDefaults();
+    refreshCorePickOptions();
+    document.getElementById('geneApplyCoreBtn')?.addEventListener('click', applyUserCoreOnly);
+    document.getElementById('genePlanDistanceBtn')?.addEventListener('click', ()=>applyRecommendedPlan('distance'));
+    document.getElementById('genePlan666Btn')?.addEventListener('click', ()=>applyRecommendedPlan('triple666'));
+    document.getElementById('genePlan126Btn')?.addEventListener('click', ()=>applyRecommendedPlan('dist12ground6'));
+  }
+  function injectCandidateSuggestButton(){
+    const el = document.getElementById('factorCandidates');
+    if (!el || el.querySelector('#geneCandidateFillBtn')) return;
+    const tools = document.createElement('div');
+    tools.className = 'gene-advisor-candidate-tools';
+    tools.innerHTML = `<div class="row"><div><b>부모/조부모 6칸 지정</b><div class="meta">왼쪽 인자 설계 추천의 6칸 선택을 계보에 적용</div></div><button class="btn small" id="geneCandidateFillBtn">적용</button></div>`;
+    el.prepend(tools);
+    tools.querySelector('#geneCandidateFillBtn')?.addEventListener('click', applyUserCoreOnly);
+  }
+  const oldRenderCandidates = typeof renderFactorCandidates === 'function' ? renderFactorCandidates : null;
+  if (oldRenderCandidates) {
+    renderFactorCandidates = function(){ oldRenderCandidates(); injectCandidateSuggestButton(); };
+  }
+  const oldRenderPlanner = typeof renderFactorPlanner === 'function' ? renderFactorPlanner : null;
+  if (oldRenderPlanner) {
+    renderFactorPlanner = function(rebuildTree=true){
+      oldRenderPlanner(rebuildTree);
+      ensureGeneAdvisorUI();
+      injectCandidateSuggestButton();
+      ensureAdvisorDefaults();
+    };
+  }
+  document.addEventListener('DOMContentLoaded', ()=>setTimeout(()=>{ safe(()=>{ ensureGeneAdvisorUI(); injectCandidateSuggestButton(); }, null); }, 200));
+  setTimeout(()=>{ safe(()=>{ ensureGeneAdvisorUI(); injectCandidateSuggestButton(); }, null); }, 500);
+})();
+</script>
+
+
 </body>
 </html>
