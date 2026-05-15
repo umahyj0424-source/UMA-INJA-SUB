@@ -580,7 +580,7 @@
     const BUILTIN_DATA = JSON.parse(JSON.stringify(DATA));
     try {
       const savedData = localStorage.getItem(STORAGE_DATA_KEY);
-      if (savedData) DATA = JSON.parse(savedData);
+      if (savedData) DATA = normalizeData(JSON.parse(savedData));
     } catch (err) {
       console.warn('저장된 사이트 데이터 불러오기 실패', err);
     }
@@ -1311,7 +1311,7 @@
         const saved = localStorage.getItem(FACTOR_STORAGE_KEY);
         if (saved) return JSON.parse(saved);
       } catch (e) {}
-      return {target:'', desired:['단거리'], minStars:9, minApt:'A', slots:{}};
+      return {target:'', desired:[...FACTOR_TYPES], minStars:9, minApt:'A', slots:{}, gene4DefaultAllApplied:true};
     }
     function saveFactorBlueprint() { localStorage.setItem(FACTOR_STORAGE_KEY, JSON.stringify(factorBlueprint)); }
     function factorChar(id) { return FACTOR_DATA.chars.find(c => String(c.id) === String(id)); }
@@ -1342,7 +1342,7 @@
     function ensureFactorSlots() {
       factorBlueprint.slots = factorBlueprint.slots || {};
       FACTOR_SLOT_DEFS.forEach(d => { if (!factorBlueprint.slots[d.id]) factorBlueprint.slots[d.id] = {charaId:'', redType:'', stars:0}; });
-      factorBlueprint.desired = factorBlueprint.desired || [];
+      factorBlueprint.desired = Array.isArray(factorBlueprint.desired) ? factorBlueprint.desired : [...FACTOR_TYPES];
       factorBlueprint.minStars = Number(factorBlueprint.minStars || 9);
       factorBlueprint.minApt = factorBlueprint.minApt || 'A';
     }
@@ -1715,11 +1715,7 @@
     if ($('#skillRecPaste')) $('#skillRecPaste').addEventListener('input', renderSkillRecommend);
     if ($('#skillRecRunBtn')) $('#skillRecRunBtn').addEventListener('click', renderSkillRecommend);
     if ($('#skillRecSampleBtn')) $('#skillRecSampleBtn').addEventListener('click', () => {
-      $('#skillRecPaste').value = `터다지기	40%
-전광석화	180
-스프린트 터보	30%
-꽃봉오리, 피어날 때	200
-꼬리 올리기	90`;
+      $('#skillRecPaste').value = "터다지기\t40%\n전광석화\t180\n스프린트 터보\t30%\n꽃봉오리, 피어날 때\t200\n꼬리 올리기\t90";
       renderSkillRecommend();
     });
     $('#dbSearch').addEventListener('input', renderSkillDb);
@@ -1750,5 +1746,648 @@
     initFactorPlanner();
     renderAll();
   </script>
+
+
+<script>
+/* 4주년 유전자작 확장 패치: 31칸 계보, 유전자인자 판정, 히든인자 로테 체크 */
+(function(){
+  const extraCss = `
+    .pedigree-board.gene31 { min-width: 1950px; grid-template-columns: repeat(16, 112px); gap: 13px 10px; align-items:start; }
+    .gene31 .uma-card { width:108px; padding:6px; border-radius:15px; }
+    .gene31 .uma-card.target { width:118px; }
+    .gene31 .uma-card-head { min-height:30px; gap:5px; }
+    .gene31 .uma-icon { width:28px; height:28px; font-size:17px; border-radius:9px; }
+    .gene31 .uma-card select.char-select { height:28px; font-size:10px; padding:4px 5px; }
+    .apt-mini.grouped { display:flex; flex-direction:column; gap:3px; }
+    .apt-row { display:grid; gap:3px; }
+    .apt-row.ground { grid-template-columns: repeat(2, 1fr); }
+    .apt-row.distance { grid-template-columns: repeat(4, 1fr); }
+    .apt-row.style { grid-template-columns: repeat(4, 1fr); }
+    .gene31 .apt-cell { min-height:28px; border-radius:6px; }
+    .gene31 .apt-label { font-size:10px; }
+    .gene31 .apt-rank { font-size:12px; margin-top:2px; }
+    .red-factor-grid { margin-top:6px; background:#f7f7f8; border-radius:9px; padding:5px; display:flex; flex-direction:column; gap:4px; }
+    .red-factor-grid .rf-row { display:grid; gap:3px; }
+    .red-factor-grid .rf-row.ground { grid-template-columns: repeat(2, 1fr); }
+    .red-factor-grid .rf-row.distance { grid-template-columns: repeat(4, 1fr); }
+    .red-factor-grid .rf-row.style { grid-template-columns: repeat(4, 1fr); }
+    .rf-cell { display:flex; align-items:center; justify-content:space-between; gap:2px; background:#fff; border:1px solid rgba(0,0,0,.05); border-radius:6px; padding:2px 3px; }
+    .rf-cell .rf-label { font-size:10px; font-weight:900; color:#166534; }
+    .rf-cell select { height:22px; min-width:34px; padding:1px 2px; font-size:10px; border-radius:5px; }
+    .rf-cell.active { outline:2px solid #f59e0b; background:#fff7ed; }
+    .gene-badge { margin-top:5px; padding:4px 5px; border-radius:8px; text-align:center; font-size:10px; font-weight:900; background:#eef2ff; color:#3730a3; }
+    .gene-badge.guaranteed { background:#dcfce7; color:#166534; }
+    .gene-badge.chance { background:#fef3c7; color:#92400e; }
+    .gene-badge.none { background:#fee2e2; color:#991b1b; }
+    .ped-target { grid-column: 8 / 10; grid-row: 1; }
+    .ped-p1 { grid-column: 5 / 7; grid-row: 2; }
+    .ped-p2 { grid-column: 11 / 13; grid-row: 2; }
+    .ped-gp1a { grid-column: 2 / 4; grid-row: 3; }
+    .ped-gp1b { grid-column: 6 / 8; grid-row: 3; }
+    .ped-gp2a { grid-column: 10 / 12; grid-row: 3; }
+    .ped-gp2b { grid-column: 14 / 16; grid-row: 3; }
+    .ped-ggp1a1 { grid-column: 1 / 2; grid-row: 4; } .ped-ggp1a2 { grid-column: 3 / 4; grid-row: 4; }
+    .ped-ggp1b1 { grid-column: 5 / 6; grid-row: 4; } .ped-ggp1b2 { grid-column: 7 / 8; grid-row: 4; }
+    .ped-ggp2a1 { grid-column: 9 / 10; grid-row: 4; } .ped-ggp2a2 { grid-column: 11 / 12; grid-row: 4; }
+    .ped-ggp2b1 { grid-column: 13 / 14; grid-row: 4; } .ped-ggp2b2 { grid-column: 15 / 16; grid-row: 4; }
+    .ped-h1 { grid-column: 1 / 2; grid-row: 5; } .ped-h2 { grid-column: 2 / 3; grid-row: 5; }
+    .ped-h3 { grid-column: 3 / 4; grid-row: 5; } .ped-h4 { grid-column: 4 / 5; grid-row: 5; }
+    .ped-h5 { grid-column: 5 / 6; grid-row: 5; } .ped-h6 { grid-column: 6 / 7; grid-row: 5; }
+    .ped-h7 { grid-column: 7 / 8; grid-row: 5; } .ped-h8 { grid-column: 8 / 9; grid-row: 5; }
+    .ped-h9 { grid-column: 9 / 10; grid-row: 5; } .ped-h10 { grid-column: 10 / 11; grid-row: 5; }
+    .ped-h11 { grid-column: 11 / 12; grid-row: 5; } .ped-h12 { grid-column: 12 / 13; grid-row: 5; }
+    .ped-h13 { grid-column: 13 / 14; grid-row: 5; } .ped-h14 { grid-column: 14 / 15; grid-row: 5; }
+    .ped-h15 { grid-column: 15 / 16; grid-row: 5; } .ped-h16 { grid-column: 16 / 17; grid-row: 5; }
+    .gene-summary-grid { display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:10px; }
+    @media (max-width: 920px){ .gene-summary-grid { grid-template-columns:1fr; } }
+    .gene-node-card { background:#fff; border:1px solid var(--line); border-radius:16px; padding:10px; }
+    .gene-node-card h4 { margin:0 0 8px; font-size:14px; }
+    .gene-status-list { display:flex; flex-direction:column; gap:6px; }
+    .gene-status-row { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 8px; border-radius:12px; background:#f8fafc; font-size:13px; }
+    .gene-status-row .stars { font-weight:900; }
+    .gene-status-row.guaranteed { background:#dcfce7; color:#14532d; }
+    .gene-status-row.chance { background:#fef3c7; color:#78350f; }
+    .gene-status-row.none { background:#fee2e2; color:#7f1d1d; }
+    .hidden-grid { display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:10px; }
+    @media (max-width: 760px){ .hidden-grid { grid-template-columns:1fr 1fr; } }
+    .hidden-box { border:1px solid var(--line); border-radius:16px; padding:10px; background:#fff; }
+    .hidden-box strong { display:block; margin-bottom:6px; }
+    .hidden-box input { max-width:90px; }
+    .hidden-status { margin-top:6px; font-size:12px; font-weight:900; border-radius:999px; padding:4px 8px; display:inline-block; }
+    .hidden-status.ok { background:#dcfce7; color:#166534; }
+    .hidden-status.no { background:#fee2e2; color:#991b1b; }
+    .factor-source-note { background:#f8fafc; border:1px solid var(--line); border-radius:14px; padding:10px 12px; font-size:13px; line-height:1.55; }
+  `;
+  document.head.insertAdjacentHTML('beforeend', `<style>${extraCss}</style>`);
+
+  const APT_GROUPS = [
+    {cls:'ground', types:['잔디','더트']},
+    {cls:'distance', types:['단거리','마일','중거리','장거리']},
+    {cls:'style', types:['도주','선행','선입','추입']}
+  ];
+  const G4_SLOT_DEFS = [
+    {id:'h1', label:'고조부모 A-1-1-1', gen:4}, {id:'h2', label:'고조부모 A-1-1-2', gen:4},
+    {id:'h3', label:'고조부모 A-1-2-1', gen:4}, {id:'h4', label:'고조부모 A-1-2-2', gen:4},
+    {id:'h5', label:'고조부모 A-2-1-1', gen:4}, {id:'h6', label:'고조부모 A-2-1-2', gen:4},
+    {id:'h7', label:'고조부모 A-2-2-1', gen:4}, {id:'h8', label:'고조부모 A-2-2-2', gen:4},
+    {id:'h9', label:'고조부모 B-1-1-1', gen:4}, {id:'h10', label:'고조부모 B-1-1-2', gen:4},
+    {id:'h11', label:'고조부모 B-1-2-1', gen:4}, {id:'h12', label:'고조부모 B-1-2-2', gen:4},
+    {id:'h13', label:'고조부모 B-2-1-1', gen:4}, {id:'h14', label:'고조부모 B-2-1-2', gen:4},
+    {id:'h15', label:'고조부모 B-2-2-1', gen:4}, {id:'h16', label:'고조부모 B-2-2-2', gen:4}
+  ];
+  if (typeof FACTOR_SLOT_DEFS !== 'undefined' && !FACTOR_SLOT_DEFS.some(x=>x.id==='h1')) {
+    FACTOR_SLOT_DEFS.push(...G4_SLOT_DEFS);
+  }
+  if (typeof FACTOR_ANCESTOR_SLOTS !== 'undefined') {
+    Object.assign(FACTOR_ANCESTOR_SLOTS, {
+      target: FACTOR_SLOT_DEFS.map(d=>d.id),
+      p1: ['gp1a','gp1b','ggp1a1','ggp1a2','ggp1b1','ggp1b2','h1','h2','h3','h4','h5','h6','h7','h8'],
+      p2: ['gp2a','gp2b','ggp2a1','ggp2a2','ggp2b1','ggp2b2','h9','h10','h11','h12','h13','h14','h15','h16'],
+      gp1a: ['ggp1a1','ggp1a2','h1','h2','h3','h4'],
+      gp1b: ['ggp1b1','ggp1b2','h5','h6','h7','h8'],
+      gp2a: ['ggp2a1','ggp2a2','h9','h10','h11','h12'],
+      gp2b: ['ggp2b1','ggp2b2','h13','h14','h15','h16'],
+      ggp1a1: ['h1','h2'], ggp1a2: ['h3','h4'], ggp1b1: ['h5','h6'], ggp1b2: ['h7','h8'],
+      ggp2a1: ['h9','h10'], ggp2a2: ['h11','h12'], ggp2b1: ['h13','h14'], ggp2b2: ['h15','h16'],
+      h1:[],h2:[],h3:[],h4:[],h5:[],h6:[],h7:[],h8:[],h9:[],h10:[],h11:[],h12:[],h13:[],h14:[],h15:[],h16:[]
+    });
+  }
+  const GENE_SOURCE_MAP = {
+    target: ['p1','p2','gp1a','gp1b','gp2a','gp2b'],
+    p1: ['gp1a','gp1b','ggp1a1','ggp1a2','ggp1b1','ggp1b2'],
+    p2: ['gp2a','gp2b','ggp2a1','ggp2a2','ggp2b1','ggp2b2'],
+    gp1a: ['ggp1a1','ggp1a2','h1','h2','h3','h4'],
+    gp1b: ['ggp1b1','ggp1b2','h5','h6','h7','h8'],
+    gp2a: ['ggp2a1','ggp2a2','h9','h10','h11','h12'],
+    gp2b: ['ggp2b1','ggp2b2','h13','h14','h15','h16']
+  };
+  const GENE_NODE_LABELS = {target:'본육성', p1:'부모 A', p2:'부모 B', gp1a:'조부모 A-1', gp1b:'조부모 A-2', gp2a:'조부모 B-1', gp2b:'조부모 B-2'};
+  const HIDDEN_LABELS = [
+    ['right','우의 눈뜸','우회전'], ['left','좌의 눈뜸','좌회전'],
+    ['spring','봄의 눈뜸','봄'], ['summer','여름의 눈뜸','여름'], ['fall','가을의 눈뜸','가을'], ['winter','겨울의 눈뜸','겨울']
+  ];
+
+  function slotDefaults(){
+    const rf = {}; FACTOR_TYPES.forEach(t=>rf[t]=0);
+    return {charaId:'', redType:'', stars:0, redFactors:rf};
+  }
+  function normalizeSlot(s){
+    const n = Object.assign(slotDefaults(), s || {});
+    n.redFactors = Object.assign({}, slotDefaults().redFactors, n.redFactors || {});
+    if (n.redType && Number(n.stars||0) > 0 && !Number(n.redFactors[n.redType]||0)) n.redFactors[n.redType] = Number(n.stars||0);
+    FACTOR_TYPES.forEach(t=> n.redFactors[t] = Math.max(0, Math.min(3, Number(n.redFactors[t]||0))));
+    return n;
+  }
+  ensureFactorSlots = function(){
+    factorBlueprint.slots = factorBlueprint.slots || {};
+    FACTOR_SLOT_DEFS.forEach(d => { factorBlueprint.slots[d.id] = normalizeSlot(factorBlueprint.slots[d.id]); });
+    if (!Array.isArray(factorBlueprint.desired) || !factorBlueprint.desired.length || (!factorBlueprint.gene4DefaultAllApplied && factorBlueprint.desired.length===1 && factorBlueprint.desired[0]==='단거리')) { factorBlueprint.desired = [...FACTOR_TYPES]; factorBlueprint.gene4DefaultAllApplied = true; }
+    factorBlueprint.minStars = Number(factorBlueprint.minStars || 9);
+    factorBlueprint.minApt = factorBlueprint.minApt || 'A';
+    factorBlueprint.hidden = Object.assign({right:0,left:0,spring:0,summer:0,fall:0,winter:0}, factorBlueprint.hidden || {});
+  };
+  slotValue = function(id){ ensureFactorSlots(); return factorBlueprint.slots?.[id] || normalizeSlot({}); };
+  function redFactorsOf(slotId){ return slotValue(slotId).redFactors || {}; }
+  redTotalsByType = function(slotIds=null){
+    const totals = {}; FACTOR_TYPES.forEach(t=>totals[t]=0);
+    const ids = slotIds || FACTOR_SLOT_DEFS.map(d=>d.id);
+    ids.forEach(id => { const rf = redFactorsOf(id); FACTOR_TYPES.forEach(t => totals[t] += Number(rf[t]||0)); });
+    return totals;
+  };
+  function getGeneStatus(stars){
+    stars = Number(stars||0);
+    if (stars >= 12) return {status:'guaranteed', label:'확정 100%', rate:100, missing:0};
+    if (stars >= 6) return {status:'chance', label:'추첨 약 40%', rate:40, missing:0};
+    return {status:'none', label:`부족 ${6-stars}★`, rate:0, missing:6-stars};
+  }
+  function geneJudgeForNode(nodeId, aptitude){
+    const ids = GENE_SOURCE_MAP[nodeId] || [];
+    const stars = redTotalsByType(ids)[aptitude] || 0;
+    return {nodeId, aptitude, stars, ...getGeneStatus(stars)};
+  }
+  function bestGeneForNode(nodeId){
+    const wanted = (factorBlueprint.desired && factorBlueprint.desired.length) ? factorBlueprint.desired : FACTOR_TYPES;
+    const arr = wanted.map(t=>geneJudgeForNode(nodeId,t));
+    return arr.sort((a,b)=>b.stars-a.stars || (b.rate||0)-(a.rate||0))[0] || geneJudgeForNode(nodeId,'단거리');
+  }
+  renderAptMini = function(apt={}, opts={}){
+    const final = opts.final || null;
+    const base = opts.base || apt;
+    const slotId = opts.slotId;
+    const rf = slotId ? redFactorsOf(slotId) : {};
+    return `<div class="apt-mini grouped">${APT_GROUPS.map(g=>`<div class="apt-row ${g.cls}">${g.types.map(t=>{
+      const rank = (final ? final[t] : apt[t]) || '-';
+      const baseRank = (base && base[t]) || rank;
+      const changed = final && rank !== baseRank;
+      const red = Number(rf[t]||0) > 0;
+      const weak = ['F','G','-'].includes(rank);
+      return `<div class="apt-cell ${changed?'changed':''} ${red?'red-factor':''} ${weak?'weak':''}" title="${t}: ${baseRank}${changed?' → '+rank:''}${red?' / 적인자 '+rf[t]+'★':''}"><span class="apt-label">${aptShort(t)}</span><span class="apt-rank">${rank}</span></div>`;
+    }).join('')}</div>`).join('')}</div>`;
+  };
+  function renderRedFactorGrid(slotId){
+    const rf = redFactorsOf(slotId);
+    return `<div class="red-factor-grid" title="빨간 적성인자 별 수 입력">${APT_GROUPS.map(g=>`<div class="rf-row ${g.cls}">${g.types.map(t=>{
+      const val = Number(rf[t]||0);
+      return `<label class="rf-cell ${val?'active':''}"><span class="rf-label">${aptShort(t)}</span><select data-factor-field="redFactor" data-red-type="${t}">${[0,1,2,3].map(n=>`<option value="${n}" ${val===n?'selected':''}>${n}</option>`).join('')}</select></label>`;
+    }).join('')}</div>`).join('')}</div>`;
+  }
+  renderUmaCard = function(slotId, label, gen, isTarget=false){
+    const s = isTarget ? {charaId:factorBlueprint.target, redFactors:{}} : slotValue(slotId);
+    const c = factorChar(s.charaId);
+    const baseApt = c?.apt || {};
+    const finalApt = finalAptForNode(isTarget ? 'target' : slotId);
+    const title = c?.name || '선택 안 함';
+    const cls = isTarget ? 'target' : (c ? '' : 'empty');
+    const charSelect = isTarget
+      ? `<select id="factorTargetInCard" class="char-select">${charOptions(factorBlueprint.target)}</select>`
+      : `<select class="char-select" data-factor-field="charaId">${charOptions(s.charaId)}</select>`;
+    const g = GENE_SOURCE_MAP[slotId || 'target'] ? bestGeneForNode(slotId || 'target') : null;
+    const factorBox = isTarget
+      ? `<div class="red-factor-bar"><div class="factor-stars">상성 ${getFactorScores().final.total} · ${relationRank(getFactorScores().final.total)}</div></div>`
+      : renderRedFactorGrid(slotId);
+    const geneBadge = g ? `<div class="gene-badge ${g.status}">${aptShort(g.aptitude)} ${g.stars}★ · ${g.label}</div>` : '';
+    const icon = isTarget?'👑':gen===1?'🐎':gen===2?'🌿':gen===3?'🐴':'🧬';
+    return `<div class="ped-node ped-${slotId || 'target'}"><div class="uma-card ${cls}" data-factor-slot="${slotId || 'target'}">
+      <div class="uma-card-head"><div class="uma-icon">${icon}</div>${charSelect}</div>
+      ${renderAptMini(baseApt, {final:finalApt, base:baseApt, slotId:isTarget?'':slotId})}
+      ${factorBox}
+      ${geneBadge}
+      <div class="uma-name" title="${title}">${label ? label + ' · ' : ''}${title}</div>
+    </div></div>`;
+  };
+  renderFactorTree = function(){
+    ensureFactorSlots();
+    const tree = document.getElementById('factorTree');
+    if (!tree) return;
+    tree.classList.add('gene31');
+    tree.innerHTML = [renderUmaCard('', '본육성', 0, true), ...FACTOR_SLOT_DEFS.map(d => renderUmaCard(d.id, d.label, d.gen, false))].join('');
+    const inCardTarget = tree.querySelector('#factorTargetInCard');
+    if (inCardTarget) inCardTarget.addEventListener('change', e => {
+      factorBlueprint.target = e.target.value;
+      const side = document.getElementById('factorTarget'); if (side) side.value = e.target.value;
+      renderFactorPlanner();
+    });
+    tree.querySelectorAll('[data-factor-slot]').forEach(box => {
+      const slot = box.dataset.factorSlot;
+      if (slot === 'target') return;
+      box.querySelectorAll('select').forEach(sel => sel.addEventListener('change', e => {
+        const field = e.target.dataset.factorField;
+        if (!field) return;
+        if (field === 'redFactor') {
+          const t = e.target.dataset.redType;
+          factorBlueprint.slots[slot].redFactors[t] = Number(e.target.value||0);
+          const maxType = Object.entries(factorBlueprint.slots[slot].redFactors).sort((a,b)=>Number(b[1])-Number(a[1]))[0];
+          factorBlueprint.slots[slot].redType = maxType && Number(maxType[1])>0 ? maxType[0] : '';
+          factorBlueprint.slots[slot].stars = maxType && Number(maxType[1])>0 ? Number(maxType[1]) : 0;
+        } else {
+          factorBlueprint.slots[slot][field] = field === 'stars' ? Number(e.target.value) : e.target.value;
+        }
+        renderFactorPlanner();
+      }));
+    });
+  };
+  function renderGeneStatusPanel(){
+    const wanted = (factorBlueprint.desired && factorBlueprint.desired.length) ? factorBlueprint.desired : FACTOR_TYPES;
+    const nodes = ['target','p1','p2','gp1a','gp1b','gp2a','gp2b'];
+    return `<div class="factor-source-note"><b>유전자인자 판정</b>: 해당 말딸을 육성할 때 쓰는 부모 2명 + 조부모 4명의 같은 빨간 적성인자 별 수 합계로 계산. 6~11★는 약 40% / 검증 기반 추정, 12★ 이상은 확정.</div>
+      <div class="gene-summary-grid" style="margin-top:12px;">${nodes.map(n=>`<div class="gene-node-card"><h4>${GENE_NODE_LABELS[n]}</h4><div class="gene-status-list">${wanted.map(t=>{
+        const g = geneJudgeForNode(n,t);
+        return `<div class="gene-status-row ${g.status}"><span>${t}</span><span class="stars">${g.stars}★ · ${g.label}</span></div>`;
+      }).join('')}</div></div>`).join('')}</div>`;
+  }
+  renderFactorRedSummary = function(){
+    const el = document.getElementById('factorRedSummary');
+    if (!el) return;
+    const base = targetBaseApt();
+    const totals = redTotalsByType();
+    const final = finalAptByInheritance();
+    const desired = factorBlueprint.desired || [];
+    const cards = FACTOR_TYPES.map(t => {
+      const b = base[t] || '-';
+      const f = final[t] || b;
+      const stars = totals[t] || 0;
+      const up = f !== b;
+      const gene = geneJudgeForNode('target', t);
+      const nextIdx = Math.min(6, aptIdx(f)+1);
+      const nextRank = aptFromIdx(nextIdx);
+      const needNext = nextIdx > aptIdx(f) ? requiredStarsForApt(b, nextRank) : null;
+      const remain = needNext === null ? '-' : Math.max(0, needNext - stars) + '★';
+      return `<div class="apt-change-card ${up?'up':''}"><strong>${t} ${desired.includes(t)?'<span class="badge score">목표</span>':''}</strong><div class="before-after">${b} → ${f}</div><div class="mini">전체 적인자 ${stars}★ · 다음 ${nextRank}${needNext===null?' 불가':'까지 '+remain}</div><div class="gene-badge ${gene.status}">본육성 유전자 ${gene.stars}★ · ${gene.label}</div></div>`;
+    }).join('');
+    el.innerHTML = `${renderGeneStatusPanel()}<h3 style="margin-top:18px;">본육성 적성 변화</h3><div class="apt-change-grid">${cards}</div>
+      <p class="hint" style="margin-top:12px;">적성 상승 표시는 설계 보조용이야. 유전자인자 생성 확률은 위의 부모 2명 + 조부모 4명 합산 규칙으로 별도 판정해.</p>`;
+  };
+  function renderHiddenPanel(){
+    let box = document.getElementById('factorHiddenPanel');
+    if (!box) return;
+    ensureFactorSlots();
+    box.innerHTML = `<div class="factor-source-note"><b>히든인자 / 눈뜸 체크</b><br>히든인자는 유전자인자 계산식에 포함하지 않고 별도로 관리해. 우/좌의 눈뜸은 해당 방향 레이스 6승 이상, 계절 눈뜸은 해당 계절 레이스 6승 이상이 기준이야.</div>
+      <div class="hidden-grid" style="margin-top:12px;">${HIDDEN_LABELS.map(([key,name,label])=>{
+        const val = Number(factorBlueprint.hidden[key]||0);
+        const ok = val >= 6;
+        return `<div class="hidden-box"><strong>${name}</strong><label>${label} 승리 수</label><input type="number" min="0" max="30" value="${val}" data-hidden-key="${key}"><div class="hidden-status ${ok?'ok':'no'}">${ok?'조건 만족':'부족 '+(6-val)+'승'}</div></div>`;
+      }).join('')}</div>`;
+    box.querySelectorAll('[data-hidden-key]').forEach(inp=>inp.addEventListener('input', e=>{
+      factorBlueprint.hidden[e.target.dataset.hiddenKey] = Math.max(0, Number(e.target.value||0));
+      saveFactorBlueprint();
+      renderHiddenPanel();
+    }));
+  }
+  renderFactorDetail = function(){
+    const el = document.getElementById('factorDetail');
+    if (!el) return;
+    const S = id => slotValue(id).charaId;
+    const lines = [
+      ['본육성 부모 A', factorName(factorBlueprint.target), factorName(S('p1')), commonRelationScore([factorBlueprint.target,S('p1')])],
+      ['본육성 부모 B', factorName(factorBlueprint.target), factorName(S('p2')), commonRelationScore([factorBlueprint.target,S('p2')])],
+      ['조부모 A-1 라인', `${factorName(factorBlueprint.target)} / ${factorName(S('p1'))}`, factorName(S('gp1a')), commonRelationScore([factorBlueprint.target,S('p1'),S('gp1a')])],
+      ['조부모 A-2 라인', `${factorName(factorBlueprint.target)} / ${factorName(S('p1'))}`, factorName(S('gp1b')), commonRelationScore([factorBlueprint.target,S('p1'),S('gp1b')])],
+      ['조부모 B-1 라인', `${factorName(factorBlueprint.target)} / ${factorName(S('p2'))}`, factorName(S('gp2a')), commonRelationScore([factorBlueprint.target,S('p2'),S('gp2a')])],
+      ['조부모 B-2 라인', `${factorName(factorBlueprint.target)} / ${factorName(S('p2'))}`, factorName(S('gp2b')), commonRelationScore([factorBlueprint.target,S('p2'),S('gp2b')])]
+    ];
+    el.innerHTML = `<div class="table-wrap"><table class="factor-mini-table"><thead><tr><th>항목</th><th>기준</th><th>대상</th><th>점수</th></tr></thead><tbody>${lines.map(r=>`<tr><td>${r[0]}</td><td>${r[1]||'-'}</td><td>${r[2]||'-'}</td><td>${r[3]}</td></tr>`).join('')}</tbody></table></div>${renderNeedTable()}`;
+  };
+  renderFactorPlanner = function(rebuildTree=true){
+    ensureFactorSlots();
+    if (rebuildTree) renderFactorTree();
+    renderFactorScoreSummary();
+    renderFactorRedSummary();
+    renderFactorCandidates();
+    renderFactorDetail();
+    renderHiddenPanel();
+    saveFactorBlueprint();
+  };
+
+  function upgradeFactorSection(){
+    const factor = document.getElementById('factor');
+    if (!factor) return;
+    const aside = factor.querySelector('aside.panel');
+    if (aside) {
+      const h2 = aside.querySelector('h2'); if (h2) h2.textContent = '인자 설계 / 4주년 유전자작';
+      const hint = aside.querySelector('p.hint'); if (hint) hint.innerHTML = '기존 카드형 계보 UI를 유지하면서 <b>31칸 유전자작 설계</b>를 추가한 버전이야. 각 카드의 빨간 적성인자를 0~3★로 입력하면 본육성·부모·조부모의 유전자인자 판정을 자동 계산해.';
+      const h3 = [...aside.querySelectorAll('h3')].find(x=>x.textContent.includes('목표 적인자'));
+      if (h3) h3.textContent = '목표 유전자인자 선택';
+      if (!document.getElementById('factorDownloadBtn')) {
+        const row = document.createElement('div'); row.className='row'; row.style.marginTop='10px';
+        row.innerHTML = '<button class="btn ghost" id="factorDownloadBtn">설계 JSON 다운로드</button>';
+        const txt = document.getElementById('factorImportText');
+        txt?.parentNode.insertBefore(row, txt);
+        row.querySelector('#factorDownloadBtn').addEventListener('click', ()=>downloadText('uma-gene-factor-design.json', JSON.stringify(factorBlueprint, null, 2), 'application/json;charset=utf-8'));
+      }
+    }
+    const note = factor.querySelector('.factor-flow-note');
+    if (note && !note.dataset.gene31) {
+      note.dataset.gene31='1';
+      note.innerHTML = '<span class="badge">1단: 본육성</span><span class="badge">2단: 부모 2명</span><span class="badge">3단: 조부모 4명</span><span class="badge">4단: 증조부모 8명</span><span class="badge">5단: 고조부모 16명</span><span class="badge warn">확률은 검증 기반 추정</span>';
+    }
+    if (!document.getElementById('factorHiddenPanel')) {
+      const candidates = document.getElementById('factorCandidates')?.closest('section.panel');
+      const sec = document.createElement('section'); sec.className='panel';
+      sec.innerHTML = '<h2>히든인자 / 눈뜸 로테 체크</h2><div id="factorHiddenPanel"></div>';
+      candidates?.parentNode.insertBefore(sec, candidates);
+    }
+  }
+  upgradeFactorSection();
+  try { ensureFactorSlots(); renderFactorPlanner(); } catch(e) { console.warn('4주년 유전자작 패치 초기화 실패', e); }
+})();
+</script>
+
+
+
+<script>
+/* 4주년 유전자작 UI v4: 단일 적인자 선택 카드, 히든인자 표시, 31칸/핵심보기 전환 */
+(function(){
+  const css = `
+    .gene-view-controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between; margin:0 0 10px; padding:10px 12px; border:1px solid var(--line); border-radius:16px; background:#fff; }
+    .gene-view-controls .left, .gene-view-controls .right { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+    .gene-view-controls .mini-label { font-size:12px; font-weight:900; color:#4b5563; }
+    .gene-view-controls .gene-zoom-number { width:76px; height:32px; padding:4px 8px; border:1px solid var(--line); border-radius:10px; font-weight:900; text-align:right; }
+    .pedigree-board.gene31.compact-card { min-width: 1880px; grid-template-columns: repeat(16, 106px); gap: 12px 9px; }
+    .pedigree-board.gene31.compact-card.hide-high { min-width: 1040px; grid-template-columns: repeat(8, 112px); }
+    .compact-card .uma-card { width:104px; padding:6px; border-radius:15px; }
+    .compact-card .uma-card.target { width:116px; }
+    .compact-card .uma-card-head { min-height:29px; gap:5px; margin-bottom:5px; }
+    .compact-card .uma-icon { width:28px; height:28px; font-size:17px; border-radius:9px; }
+    .compact-card .uma-card select.char-select { height:28px; font-size:10px; padding:4px 5px; }
+    .apt-mini.grouped { display:flex; flex-direction:column; gap:3px; }
+    .apt-row { display:grid; gap:3px; }
+    .apt-row.ground { grid-template-columns: repeat(2, 1fr); }
+    .apt-row.distance { grid-template-columns: repeat(4, 1fr); }
+    .apt-row.style { grid-template-columns: repeat(4, 1fr); }
+    .compact-card .apt-cell { min-height:28px; border-radius:6px; }
+    .compact-card .apt-label { font-size:10px; }
+    .compact-card .apt-rank { font-size:12px; margin-top:2px; }
+    .single-factor-bar { margin-top:6px; background:#f7f7f8; border-radius:9px; padding:5px; }
+    .single-factor-row { display:grid; grid-template-columns: 1fr 48px; gap:4px; }
+    .single-factor-row select { height:28px; padding:4px 4px; border-radius:8px; font-size:10px; min-width:0; }
+    .single-factor-stars { text-align:center; color:#166534; font-weight:900; letter-spacing:1px; margin-top:3px; font-size:11px; min-height:14px; }
+    .single-factor-stars.empty { color:#8b8f99; letter-spacing:0; }
+    .gene-badge { margin-top:5px; padding:4px 5px; border-radius:8px; text-align:center; font-size:10px; font-weight:900; background:#eef2ff; color:#3730a3; line-height:1.25; }
+    .gene-badge.guaranteed { background:#dcfce7; color:#166534; }
+    .gene-badge.chance { background:#fef3c7; color:#92400e; }
+    .gene-badge.none { background:#fee2e2; color:#991b1b; }
+    .gene-badge.skip { background:#f3f4f6; color:#6b7280; }
+    .gene-badge-list { display:flex; flex-direction:column; gap:3px; margin-top:5px; }
+    .gene-badge-list .gene-badge { margin-top:0; }
+    .hidden-card-bar { margin-top:5px; border-radius:8px; padding:4px; background:#eefcf3; }
+    .hidden-card-bar select { height:25px; padding:3px 4px; border-radius:7px; font-size:10px; width:100%; border-color:#d1fae5; color:#166534; font-weight:800; }
+    .hidden-card-label { margin-top:2px; text-align:center; font-size:10px; color:#166534; font-weight:900; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .pedigree-board.gene31.compact-card.hide-high .ped-target { grid-column: 4 / 6; grid-row: 1; }
+    .pedigree-board.gene31.compact-card.hide-high .ped-p1 { grid-column: 2 / 4; grid-row: 2; }
+    .pedigree-board.gene31.compact-card.hide-high .ped-p2 { grid-column: 6 / 8; grid-row: 2; }
+    .pedigree-board.gene31.compact-card.hide-high .ped-gp1a { grid-column: 1 / 3; grid-row: 3; }
+    .pedigree-board.gene31.compact-card.hide-high .ped-gp1b { grid-column: 3 / 5; grid-row: 3; }
+    .pedigree-board.gene31.compact-card.hide-high .ped-gp2a { grid-column: 5 / 7; grid-row: 3; }
+    .pedigree-board.gene31.compact-card.hide-high .ped-gp2b { grid-column: 7 / 9; grid-row: 3; }
+    .pedigree-board.gene31.compact-card.hide-high .ped-ggp1a1 { grid-column: 1 / 2; grid-row: 4; }
+    .pedigree-board.gene31.compact-card.hide-high .ped-ggp1a2 { grid-column: 2 / 3; grid-row: 4; }
+    .pedigree-board.gene31.compact-card.hide-high .ped-ggp1b1 { grid-column: 3 / 4; grid-row: 4; }
+    .pedigree-board.gene31.compact-card.hide-high .ped-ggp1b2 { grid-column: 4 / 5; grid-row: 4; }
+    .pedigree-board.gene31.compact-card.hide-high .ped-ggp2a1 { grid-column: 5 / 6; grid-row: 4; }
+    .pedigree-board.gene31.compact-card.hide-high .ped-ggp2a2 { grid-column: 6 / 7; grid-row: 4; }
+    .pedigree-board.gene31.compact-card.hide-high .ped-ggp2b1 { grid-column: 7 / 8; grid-row: 4; }
+    .pedigree-board.gene31.compact-card.hide-high .ped-ggp2b2 { grid-column: 8 / 9; grid-row: 4; }
+    .pedigree-board.gene31.compact-card.hide-high [class*="ped-h"] { display:none; }
+    @media (max-width: 760px) { .gene-view-controls { position:sticky; top:0; z-index:3; } }
+  `;
+  document.head.insertAdjacentHTML('beforeend', `<style>${css}</style>`);
+
+  const APT_GROUPS2 = [
+    {cls:'ground', types:['잔디','더트']},
+    {cls:'distance', types:['단거리','마일','중거리','장거리']},
+    {cls:'style', types:['도주','선행','선입','추입']}
+  ];
+  const GENE_SOURCE_MAP2 = {
+    target: ['p1','p2','gp1a','gp1b','gp2a','gp2b'],
+    p1: ['gp1a','gp1b','ggp1a1','ggp1a2','ggp1b1','ggp1b2'],
+    p2: ['gp2a','gp2b','ggp2a1','ggp2a2','ggp2b1','ggp2b2'],
+    gp1a: ['ggp1a1','ggp1a2','h1','h2','h3','h4'],
+    gp1b: ['ggp1b1','ggp1b2','h5','h6','h7','h8'],
+    gp2a: ['ggp2a1','ggp2a2','h9','h10','h11','h12'],
+    gp2b: ['ggp2b1','ggp2b2','h13','h14','h15','h16']
+  };
+  const HIDDEN_CARD_OPTIONS = [
+    ['', '히든 없음'], ['right','우의 눈뜸'], ['left','좌의 눈뜸'],
+    ['spring','봄의 눈뜸'], ['summer','여름의 눈뜸'], ['fall','가을의 눈뜸'], ['winter','겨울의 눈뜸']
+  ];
+  function getView(){
+    factorBlueprint.view = Object.assign({showHigh:true, zoom:85}, factorBlueprint.view || {});
+    return factorBlueprint.view;
+  }
+  function slotDefaultsV4(){
+    const rf = {}; FACTOR_TYPES.forEach(t=>rf[t]=0);
+    return {charaId:'', redType:'', stars:0, redFactors:rf, hiddenFactor:''};
+  }
+  function normalizeSlotV4(s){
+    const n = Object.assign(slotDefaultsV4(), s || {});
+    n.redFactors = Object.assign({}, slotDefaultsV4().redFactors, n.redFactors || {});
+    const max = Object.entries(n.redFactors).sort((a,b)=>Number(b[1])-Number(a[1]))[0];
+    if ((!n.redType || !Number(n.stars||0)) && max && Number(max[1]) > 0) {
+      n.redType = max[0]; n.stars = Number(max[1]);
+    }
+    n.stars = Math.max(0, Math.min(3, Number(n.stars || 0)));
+    if (!FACTOR_TYPES.includes(n.redType)) n.redType = '';
+    FACTOR_TYPES.forEach(t => n.redFactors[t] = (t === n.redType ? n.stars : 0));
+    n.hiddenFactor = n.hiddenFactor || '';
+    return n;
+  }
+  ensureFactorSlots = function(){
+    factorBlueprint.slots = factorBlueprint.slots || {};
+    FACTOR_SLOT_DEFS.forEach(d => { factorBlueprint.slots[d.id] = normalizeSlotV4(factorBlueprint.slots[d.id]); });
+    if (!Array.isArray(factorBlueprint.desired) || !factorBlueprint.desired.length || (!factorBlueprint.gene4DefaultAllApplied && factorBlueprint.desired.length===1 && factorBlueprint.desired[0]==='단거리')) { factorBlueprint.desired = [...FACTOR_TYPES]; factorBlueprint.gene4DefaultAllApplied = true; }
+    factorBlueprint.minStars = Number(factorBlueprint.minStars || 9);
+    factorBlueprint.minApt = factorBlueprint.minApt || 'A';
+    factorBlueprint.hidden = Object.assign({right:0,left:0,spring:0,summer:0,fall:0,winter:0}, factorBlueprint.hidden || {});
+    getView();
+  };
+  function syncDesiredChecksV4(){
+    const checks = document.getElementById('factorDesiredChecks');
+    if (!checks) return;
+    checks.querySelectorAll('input[type=checkbox]').forEach(inp => { inp.checked = factorBlueprint.desired.includes(inp.value); });
+  }
+  slotValue = function(id){ ensureFactorSlots(); return factorBlueprint.slots?.[id] || normalizeSlotV4({}); };
+  redTotalsByType = function(slotIds=null){
+    const totals = {}; FACTOR_TYPES.forEach(t=>totals[t]=0);
+    const ids = slotIds || FACTOR_SLOT_DEFS.map(d=>d.id);
+    ids.forEach(id => { const s = slotValue(id); if (s.redType) totals[s.redType] += Number(s.stars || 0); });
+    return totals;
+  };
+  function geneStatusV4(stars){
+    stars = Number(stars||0);
+    if (stars >= 12) return {status:'guaranteed', label:'확정 100%', missing:0};
+    if (stars >= 6) return {status:'chance', label:'추첨 약 40%', missing:0};
+    return {status:'none', label:`부족 ${6-stars}★`, missing:6-stars};
+  }
+  function geneJudgeV4(nodeId, aptitude){
+    const ids = GENE_SOURCE_MAP2[nodeId] || [];
+    const stars = redTotalsByType(ids)[aptitude] || 0;
+    return {nodeId, aptitude, stars, ...geneStatusV4(stars)};
+  }
+  function bestGeneV4(nodeId){
+    if (!GENE_SOURCE_MAP2[nodeId]) return null;
+    const wanted = (factorBlueprint.desired && factorBlueprint.desired.length) ? factorBlueprint.desired : FACTOR_TYPES;
+    const arr = wanted.map(t=>geneJudgeV4(nodeId,t));
+    return arr.sort((a,b)=>b.stars-a.stars || (b.status==='guaranteed')-(a.status==='guaranteed') || (b.status==='chance')-(a.status==='chance'))[0] || null;
+  }
+  function geneListV4(nodeId){
+    if (!GENE_SOURCE_MAP2[nodeId]) return [];
+    const wanted = (Array.isArray(factorBlueprint.desired) && factorBlueprint.desired.length) ? factorBlueprint.desired : FACTOR_TYPES;
+    return wanted.map(t=>geneJudgeV4(nodeId,t))
+      .filter(g=>Number(g.stars||0) >= 6)
+      .sort((a,b)=>Number(b.stars||0)-Number(a.stars||0) || FACTOR_TYPES.indexOf(a.aptitude)-FACTOR_TYPES.indexOf(b.aptitude));
+  }
+  function renderGeneBadgesV4(nodeId){
+    if (!GENE_SOURCE_MAP2[nodeId]) return `<div class="gene-badge skip">유전자 판정 없음</div>`;
+    const list = geneListV4(nodeId);
+    if (list.length) {
+      return `<div class="gene-badge-list">${list.map(g=>`<div class="gene-badge ${g.status}">${aptShort(g.aptitude)} ${g.stars}★ · ${g.label}</div>`).join('')}</div>`;
+    }
+    const g = bestGeneV4(nodeId);
+    return g ? `<div class="gene-badge none">${aptShort(g.aptitude)} ${g.stars}★ · ${g.label}</div>` : `<div class="gene-badge skip">유전자 판정 없음</div>`;
+  }
+  renderAptMini = function(apt={}, opts={}){
+    const final = opts.final || null;
+    const base = opts.base || apt;
+    const redType = opts.redType || '';
+    return `<div class="apt-mini grouped">${APT_GROUPS2.map(g=>`<div class="apt-row ${g.cls}">${g.types.map(t=>{
+      const rank = (final ? final[t] : apt[t]) || '-';
+      const baseRank = (base && base[t]) || rank;
+      const changed = final && rank !== baseRank;
+      const red = redType === t;
+      const weak = ['F','G','-'].includes(rank);
+      return `<div class="apt-cell ${changed?'changed':''} ${red?'red-factor':''} ${weak?'weak':''}" title="${t}: ${baseRank}${changed?' → '+rank:''}${red?' / 적인자':''}"><span class="apt-label">${aptShort(t)}</span><span class="apt-rank">${rank}</span></div>`;
+    }).join('')}</div>`).join('')}</div>`;
+  };
+  function renderSingleFactorBar(slotId){
+    const s = slotValue(slotId);
+    const label = s.redType && s.stars ? `${aptShort(s.redType)} ${'★'.repeat(Number(s.stars))}` : '적인자 미설정';
+    return `<div class="single-factor-bar">
+      <div class="single-factor-row">
+        <select data-factor-field="redType"><option value="">적인자</option>${FACTOR_TYPES.map(t=>`<option value="${t}" ${s.redType===t?'selected':''}>${t}</option>`).join('')}</select>
+        <select data-factor-field="stars">${[0,1,2,3].map(n=>`<option value="${n}" ${Number(s.stars)===n?'selected':''}>${n}★</option>`).join('')}</select>
+      </div>
+      <div class="single-factor-stars ${s.redType && s.stars ? '' : 'empty'}">${label}</div>
+    </div>`;
+  }
+  function renderHiddenCardBar(slotId){
+    const s = slotValue(slotId);
+    const current = HIDDEN_CARD_OPTIONS.find(x=>x[0]===s.hiddenFactor)?.[1] || '히든 없음';
+    return `<div class="hidden-card-bar"><select data-factor-field="hiddenFactor">${HIDDEN_CARD_OPTIONS.map(([v,t])=>`<option value="${v}" ${s.hiddenFactor===v?'selected':''}>${t}</option>`).join('')}</select><div class="hidden-card-label">${current}</div></div>`;
+  }
+  renderUmaCard = function(slotId, label, gen, isTarget=false){
+    const s = isTarget ? {charaId:factorBlueprint.target, redType:'', stars:0, hiddenFactor:''} : slotValue(slotId);
+    const c = factorChar(s.charaId);
+    const baseApt = c?.apt || {};
+    const finalApt = finalAptForNode(isTarget ? 'target' : slotId);
+    const title = c?.name || '선택 안 함';
+    const cls = isTarget ? 'target' : (c ? '' : 'empty');
+    const charSelect = isTarget
+      ? `<select id="factorTargetInCard" class="char-select">${charOptions(factorBlueprint.target)}</select>`
+      : `<select class="char-select" data-factor-field="charaId">${charOptions(s.charaId)}</select>`;
+    const icon = isTarget?'👑':gen===1?'🐎':gen===2?'🌿':gen===3?'🐴':'🧬';
+    const factorBox = isTarget
+      ? `<div class="red-factor-bar"><div class="factor-stars">상성 ${getFactorScores().final.total} · ${relationRank(getFactorScores().final.total)}</div></div>`
+      : renderSingleFactorBar(slotId);
+    const geneBadge = renderGeneBadgesV4(slotId || 'target');
+    const hidden = isTarget ? '' : renderHiddenCardBar(slotId);
+    return `<div class="ped-node ped-${slotId || 'target'}"><div class="uma-card ${cls}" data-factor-slot="${slotId || 'target'}">
+      <div class="uma-card-head"><div class="uma-icon">${icon}</div>${charSelect}</div>
+      ${renderAptMini(baseApt, {final:finalApt, base:baseApt, redType:s.redType})}
+      ${factorBox}
+      ${geneBadge}
+      ${hidden}
+      <div class="uma-name" title="${title}">${label ? label + ' · ' : ''}${title}</div>
+    </div></div>`;
+  };
+  function ensureGeneViewControls(){
+    const scroll = document.querySelector('#factor .pedigree-scroll');
+    if (!scroll || document.getElementById('geneViewControls')) return;
+    const controls = document.createElement('div');
+    controls.id = 'geneViewControls';
+    controls.className = 'gene-view-controls';
+    controls.innerHTML = `<div class="left"><button class="btn small" id="geneToggleHighBtn">고조부모 보기</button><button class="btn small secondary" id="geneFitBtn">한 화면 보기</button><span class="mini-label">31칸은 넓어서 가로 스크롤/축소 보기 권장</span></div><div class="right"><span class="mini-label">확대(%)</span><input id="geneZoomNumber" class="gene-zoom-number" type="number" min="60" max="110" step="5"><button class="btn small secondary" id="geneZoomApplyBtn">적용</button><span id="geneZoomText" class="mini-label"></span></div>`;
+    scroll.parentNode.insertBefore(controls, scroll);
+    controls.querySelector('#geneToggleHighBtn').addEventListener('click', ()=>{ const v=getView(); v.showHigh = !v.showHigh; renderFactorPlanner(); });
+    controls.querySelector('#geneFitBtn').addEventListener('click', ()=>{ const v=getView(); v.zoom = v.showHigh ? 70 : 85; renderFactorPlanner(); });
+    const applyZoom = ()=>{ const v=getView(); const inp=controls.querySelector('#geneZoomNumber'); let z=Number(inp?.value || v.zoom || 85); z=Math.max(60, Math.min(110, Math.round(z))); v.zoom = z; renderFactorTree(); saveFactorBlueprint(); };
+    controls.querySelector('#geneZoomApplyBtn').addEventListener('click', applyZoom);
+    controls.querySelector('#geneZoomNumber').addEventListener('change', applyZoom);
+    controls.querySelector('#geneZoomNumber').addEventListener('keydown', e=>{ if(e.key==='Enter') applyZoom(); });
+  }
+  function syncGeneViewControls(){
+    const v=getView();
+    const btn=document.getElementById('geneToggleHighBtn');
+    const num=document.getElementById('geneZoomNumber');
+    const text=document.getElementById('geneZoomText');
+    if (btn) btn.textContent = v.showHigh ? '고조부모 접기' : '고조부모 펼치기';
+    if (num) num.value = v.zoom;
+    if (text) text.textContent = `${v.zoom}%`;
+  }
+  renderFactorTree = function(){
+    ensureFactorSlots();
+    ensureGeneViewControls();
+    const tree = document.getElementById('factorTree');
+    if (!tree) return;
+    const v = getView();
+    tree.classList.add('gene31','compact-card');
+    tree.classList.toggle('hide-high', !v.showHigh);
+    tree.style.zoom = (Number(v.zoom||85) / 100);
+    const defs = v.showHigh ? FACTOR_SLOT_DEFS : FACTOR_SLOT_DEFS.filter(d=>!/^h\d+$/.test(d.id));
+    tree.innerHTML = [renderUmaCard('', '본육성', 0, true), ...defs.map(d => renderUmaCard(d.id, d.label, d.gen, false))].join('');
+    syncGeneViewControls();
+    const inCardTarget = tree.querySelector('#factorTargetInCard');
+    if (inCardTarget) inCardTarget.addEventListener('change', e => {
+      factorBlueprint.target = e.target.value;
+      const side = document.getElementById('factorTarget'); if (side) side.value = e.target.value;
+      renderFactorPlanner();
+    });
+    tree.querySelectorAll('[data-factor-slot]').forEach(box => {
+      const slot = box.dataset.factorSlot;
+      if (slot === 'target') return;
+      box.querySelectorAll('select').forEach(sel => sel.addEventListener('change', e => {
+        const field = e.target.dataset.factorField;
+        if (!field) return;
+        if (field === 'redType') {
+          factorBlueprint.slots[slot].redType = e.target.value;
+          if (!e.target.value) factorBlueprint.slots[slot].stars = 0;
+        } else if (field === 'stars') {
+          factorBlueprint.slots[slot].stars = Number(e.target.value || 0);
+          if (!factorBlueprint.slots[slot].redType && Number(e.target.value||0)>0) factorBlueprint.slots[slot].redType = '단거리';
+        } else if (field === 'hiddenFactor') {
+          factorBlueprint.slots[slot].hiddenFactor = e.target.value;
+        } else {
+          factorBlueprint.slots[slot][field] = e.target.value;
+        }
+        factorBlueprint.slots[slot] = normalizeSlotV4(factorBlueprint.slots[slot]);
+        renderFactorPlanner();
+      }));
+    });
+  };
+  const oldRenderFactorRedSummary = renderFactorRedSummary;
+  renderFactorRedSummary = function(){
+    oldRenderFactorRedSummary();
+    const el = document.getElementById('factorRedSummary');
+    if (!el) return;
+    const note = document.createElement('p');
+    note.className = 'hint';
+    note.style.marginTop = '10px';
+    note.textContent = '카드에는 보기 편하게 적인자 1종류만 입력하게 했어. 실제 31칸 전체가 너무 넓으면 위의 “고조부모 접기” 또는 확대 수치 입력을 사용하면 돼.';
+    el.appendChild(note);
+  };
+  renderFactorPlanner = function(rebuildTree=true){
+    ensureFactorSlots();
+    syncDesiredChecksV4();
+    if (rebuildTree) renderFactorTree();
+    renderFactorScoreSummary();
+    renderFactorRedSummary();
+    renderFactorCandidates();
+    renderFactorDetail();
+    if (typeof renderHiddenPanel === 'function') renderHiddenPanel();
+    saveFactorBlueprint();
+  };
+  try { ensureFactorSlots(); renderFactorPlanner(); } catch(e) { console.warn('compact gene UI init failed', e); }
+})();
+</script>
+
 </body>
 </html>
