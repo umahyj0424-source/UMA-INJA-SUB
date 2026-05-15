@@ -1513,15 +1513,19 @@
       return aptFromIdx(aptIdx(baseRank) + redStarStep(stars));
     }
     const FACTOR_ANCESTOR_SLOTS = {
-      target: ['p1','p2','gp1a','gp1b','gp2a','gp2b','ggp1a1','ggp1a2','ggp1b1','ggp1b2','ggp2a1','ggp2a2','ggp2b1','ggp2b2'],
+      // 적성 상승/유전자인자 판정은 해당 말딸을 육성할 때 직접 쓰는 부모 2 + 조부모 4만 본다.
+      // 본육성은 부모+조부모만, 부모는 조부모+증조부모만, 조부모는 증조부모+고조부모만 반영한다.
+      target: ['p1','p2','gp1a','gp1b','gp2a','gp2b'],
       p1: ['gp1a','gp1b','ggp1a1','ggp1a2','ggp1b1','ggp1b2'],
       p2: ['gp2a','gp2b','ggp2a1','ggp2a2','ggp2b1','ggp2b2'],
-      gp1a: ['ggp1a1','ggp1a2'],
-      gp1b: ['ggp1b1','ggp1b2'],
-      gp2a: ['ggp2a1','ggp2a2'],
-      gp2b: ['ggp2b1','ggp2b2'],
+      gp1a: ['ggp1a1','ggp1a2','h1','h2','h3','h4'],
+      gp1b: ['ggp1b1','ggp1b2','h5','h6','h7','h8'],
+      gp2a: ['ggp2a1','ggp2a2','h9','h10','h11','h12'],
+      gp2b: ['ggp2b1','ggp2b2','h13','h14','h15','h16'],
       ggp1a1: [], ggp1a2: [], ggp1b1: [], ggp1b2: [],
-      ggp2a1: [], ggp2a2: [], ggp2b1: [], ggp2b2: []
+      ggp2a1: [], ggp2a2: [], ggp2b1: [], ggp2b2: [],
+      h1: [], h2: [], h3: [], h4: [], h5: [], h6: [], h7: [], h8: [],
+      h9: [], h10: [], h11: [], h12: [], h13: [], h14: [], h15: [], h16: []
     };
     function redTotalsByType(slotIds=null) {
       const totals = {};
@@ -2462,17 +2466,24 @@
   function coreIssues(ch){
     const issues = [];
     if (!ch) return ['캐릭터 정보 없음'];
-    if (typeRank(ch,'더트') < rank('C')) issues.push(`더트 ${typeLetter(ch,'더트')}`);
-    ['마일','중거리','장거리'].forEach(t => { if (typeRank(ch,t) < rank('C')) issues.push(`${t} ${typeLetter(ch,t)}`); });
+    // 4주년 유전자작 추천 기준 v3:
+    // - 부모/조부모는 잔디·더트를 최소 E 이상으로 맞추는 편이 안정적이다.
+    // - 마일·중거리는 C 이상을 강하게 선호한다.
+    // - 장거리는 C 이상이면 좋지만, 목표와 무관하면 경고 강도는 낮게 둔다.
+    ['잔디','더트'].forEach(t => { if (typeRank(ch,t) < rank('E')) issues.push(`${t} ${typeLetter(ch,t)} → E 보정 권장`); });
+    ['마일','중거리'].forEach(t => { if (typeRank(ch,t) < rank('C')) issues.push(`${t} ${typeLetter(ch,t)} → C 보정 권장`); });
+    if (typeRank(ch,'장거리') < rank('C')) issues.push(`장거리 ${typeLetter(ch,'장거리')} → C면 좋음`);
     return issues;
   }
   function corePenalty(ch){
     if (!ch) return 9999;
     let p = 0;
-    if (typeRank(ch,'더트') < rank('C')) p += (rank('C') - typeRank(ch,'더트')) * 70;
-    ['마일','중거리','장거리'].forEach(t => { if (typeRank(ch,t) < rank('C')) p += (rank('C') - typeRank(ch,t)) * 45; });
+    ['잔디','더트'].forEach(t => { if (typeRank(ch,t) < rank('E')) p += (rank('E') - typeRank(ch,t)) * 70; });
+    ['마일','중거리'].forEach(t => { if (typeRank(ch,t) < rank('C')) p += (rank('C') - typeRank(ch,t)) * 55; });
+    if (typeRank(ch,'장거리') < rank('C')) p += (rank('C') - typeRank(ch,'장거리')) * 18;
     return p;
   }
+
   function chooseBestType(types){
     const target = getChar(factorBlueprint?.target);
     const desired = Array.isArray(factorBlueprint?.desired) ? factorBlueprint.desired : [];
@@ -2609,25 +2620,147 @@
     });
     return warnings;
   }
+  function sourceSlotsForGeneNode(node){
+    const sourceMap = {
+      p1:['gp1a','gp1b','ggp1a1','ggp1a2','ggp1b1','ggp1b2'],
+      p2:['gp2a','gp2b','ggp2a1','ggp2a2','ggp2b1','ggp2b2'],
+      gp1a:['ggp1a1','ggp1a2','h1','h2','h3','h4'],
+      gp1b:['ggp1b1','ggp1b2','h5','h6','h7','h8'],
+      gp2a:['ggp2a1','ggp2a2','h9','h10','h11','h12'],
+      gp2b:['ggp2b1','ggp2b2','h13','h14','h15','h16']
+    };
+    return sourceMap[node] || [];
+  }
+  function supportPreferredSources(node){
+    // 부모 보정은 조부모 적인자보다 증조부모 적인자를 먼저 사용한다.
+    // 조부모 보정은 고조부모 적인자를 먼저 사용한다.
+    const m = {
+      p1:['ggp1a1','ggp1a2','ggp1b1','ggp1b2','gp1a','gp1b'],
+      p2:['ggp2a1','ggp2a2','ggp2b1','ggp2b2','gp2a','gp2b'],
+      gp1a:['h1','h2','h3','h4','ggp1a1','ggp1a2'],
+      gp1b:['h5','h6','h7','h8','ggp1b1','ggp1b2'],
+      gp2a:['h9','h10','h11','h12','ggp2a1','ggp2a2'],
+      gp2b:['h13','h14','h15','h16','ggp2b1','ggp2b2']
+    };
+    return m[node] || sourceSlotsForGeneNode(node);
+  }
+  function starsNeededToReach(curLetter, targetLetter){
+    const cur = rank(curLetter || 'G');
+    const target = rank(targetLetter || 'A');
+    if (!cur || !target || cur >= target) return 0;
+    const need = (target - cur) * 3 - 2;
+    return need > 10 ? null : need;
+  }
+  function addRedStarsToSlot(slot, type, need, warnings, reason, allowOverwrite=false){
+    if (need <= 0) return 0;
+    const cur = sv(slot);
+    const currentType = cur.redType || '';
+    const currentStars = Number(cur.stars || 0);
+    if (currentType && currentType !== type && !allowOverwrite) return 0;
+    const room = currentType === type ? Math.max(0, 3 - currentStars) : 3;
+    const add = Math.min(room, need);
+    if (add <= 0) return 0;
+    if (currentType && currentType !== type && allowOverwrite) {
+      warnings.push(`${slotLabel(slot)}의 ${shortType(currentType)} ${currentStars}★를 ${reason} 때문에 ${shortType(type)} ${add}★로 바꿈`);
+      factorBlueprint.slots[slot] = Object.assign({}, factorBlueprint.slots[slot] || {}, {redType:type, stars:add});
+    } else {
+      factorBlueprint.slots[slot] = Object.assign({}, factorBlueprint.slots[slot] || {}, {redType:type, stars:currentStars + add});
+    }
+    return add;
+  }
+  function allocateSupportStars(node, type, need, warnings, reason){
+    if (!need || need <= 0) return 0;
+    const sources = supportPreferredSources(node);
+    let remain = need;
+    // 1순위: 이미 같은 적인자가 들어간 슬롯 증량
+    for (const slot of sources) {
+      if (remain <= 0) break;
+      if (sv(slot).redType === type) remain -= addRedStarsToSlot(slot, type, remain, warnings, reason, false);
+    }
+    // 2순위: 비어 있는 증조/고조부모 슬롯 사용
+    for (const slot of sources) {
+      if (remain <= 0) break;
+      const cur = sv(slot);
+      if (!cur.redType || !Number(cur.stars || 0)) remain -= addRedStarsToSlot(slot, type, remain, warnings, reason, false);
+    }
+    // 3순위: 그래도 부족하면 깊은 조상 슬롯은 덮어쓰기 허용. 부모/조부모 6칸은 최대한 보존.
+    for (const slot of sources) {
+      if (remain <= 0) break;
+      if (CORE_SLOTS.includes(slot)) continue;
+      remain -= addRedStarsToSlot(slot, type, remain, warnings, reason, true);
+    }
+    if (remain > 0) warnings.push(`${slotLabel(node)} ${reason}: ${shortType(type)} 보정 ${need}★ 중 ${need-remain}★만 배치됨. ${remain}★ 부족`);
+    return need - remain;
+  }
+  function applyCoreAptitudeSupport(goals, mode){
+    const warnings = [];
+    // 부모/조부모가 인자작 대상이 될 때 너무 낮은 적성에서 시작하지 않도록 보조 적인자를 자동 배치한다.
+    // 마장: 잔디/더트 E 이상. 거리: 마일/중거리 C 이상. 장거리 C 이상은 권장.
+    CORE_SLOTS.forEach(node => {
+      const ch = getChar(sv(node).charaId);
+      if (!ch) return;
+      ['잔디','더트'].forEach(t => {
+        const need = starsNeededToReach(ch.apt?.[t] || 'G', 'E');
+        if (need === null) warnings.push(`${slotLabel(node)} ${ch.name}: ${t} ${ch.apt?.[t] || 'G'}라서 E 보정도 매우 빡셈`);
+        else if (need > 0) allocateSupportStars(node, t, need, warnings, `${ch.name} ${t} ${ch.apt?.[t]}→E 보정`);
+      });
+      ['마일','중거리'].forEach(t => {
+        const need = starsNeededToReach(ch.apt?.[t] || 'G', 'C');
+        if (need === null) warnings.push(`${slotLabel(node)} ${ch.name}: ${t} ${ch.apt?.[t] || 'G'}라서 C 보정이 사실상 어려움`);
+        else if (need > 0) allocateSupportStars(node, t, need, warnings, `${ch.name} ${t} ${ch.apt?.[t]}→C 보정`);
+      });
+      const longNeed = starsNeededToReach(ch.apt?.['장거리'] || 'G', 'C');
+      if (longNeed === null) warnings.push(`${slotLabel(node)} ${ch.name}: 장거리 ${ch.apt?.['장거리'] || 'G'}라서 장거리 보정은 비추천`);
+      else if (longNeed > 0 && (goals.distance === '장거리' || longNeed <= 4)) {
+        allocateSupportStars(node, '장거리', longNeed, warnings, `${ch.name} 장거리 ${ch.apt?.['장거리']}→C 권장 보정`);
+      }
+    });
+    return warnings;
+  }
+
   function applyRedPattern(mode, goals){
     ensureSlots();
     const clear = id => { factorBlueprint.slots[id] = Object.assign({}, factorBlueprint.slots[id] || {}, {redType:'', stars:0}); };
     PLAN_SLOT_ORDER.forEach(clear);
     function set(slot, type, stars=3){ factorBlueprint.slots[slot] = Object.assign({}, factorBlueprint.slots[slot] || {}, {redType:type, stars}); }
+    function fillNodeSources(node, types, target=6){
+      const sourceMap = {
+        p1:['gp1a','gp1b','ggp1a1','ggp1a2','ggp1b1','ggp1b2'],
+        p2:['gp2a','gp2b','ggp2a1','ggp2a2','ggp2b1','ggp2b2'],
+        gp1a:['ggp1a1','ggp1a2','h1','h2','h3','h4'],
+        gp1b:['ggp1b1','ggp1b2','h5','h6','h7','h8'],
+        gp2a:['ggp2a1','ggp2a2','h9','h10','h11','h12'],
+        gp2b:['ggp2b1','ggp2b2','h13','h14','h15','h16']
+      };
+      const src = sourceMap[node] || [];
+      const starsOf = t => src.reduce((sum,id)=>sum + ((sv(id).redType === t) ? Number(sv(id).stars||0) : 0), 0);
+      for (const t of types) {
+        let have = starsOf(t);
+        for (const id of src) {
+          if (have >= target) break;
+          const cur = sv(id);
+          if (cur.redType && cur.redType !== t) continue;
+          const add = Math.min(3, target - have);
+          set(id, t, add);
+          have += add;
+        }
+      }
+    }
     if (mode === 'distance') {
+      // 본육성 거리 몰빵: 부모+조부모 6칸 전부 거리 3★ = 거리 18★.
       [...CORE_SLOTS, ...GGP_SLOTS, ...HIGH_SLOTS].forEach(s => set(s, goals.distance, 3));
     } else if (mode === 'triple666') {
+      // 본육성 6/6/6은 정확히 6★씩만 만든다.
+      // 기존처럼 부모/조부모 제작 라인까지 전부 6을 넣으면 잔디 9★처럼 과잉 배치되는 문제가 있어,
+      // 부모+조부모 6칸에만 3★×2 구조로 배치하고 나머지는 적성 보정 로직에 맡긴다.
       [['p1',goals.distance],['p2',goals.distance],['gp1a',goals.ground],['gp1b',goals.ground],['gp2a',goals.style],['gp2b',goals.style]].forEach(x=>set(x[0],x[1],3));
-      const cyc = [goals.distance, goals.ground, goals.style];
-      GGP_SLOTS.forEach((s,i)=>set(s,cyc[i%3],3));
-      HIGH_SLOTS.forEach((s,i)=>set(s,cyc[(i+1)%3],3));
     } else if (mode === 'dist12ground6') {
+      // 본육성: 거리 12 + 마장 6. 거리 확정권과 마장 40%권을 노림.
+      // 부모 제작 난이도를 고려해 deep 라인 전체 12/6 강제는 하지 않고, 부족 적성 보정만 자동 배치한다.
       [['p1',goals.distance],['p2',goals.distance],['gp1a',goals.distance],['gp1b',goals.distance],['gp2a',goals.ground],['gp2b',goals.ground]].forEach(x=>set(x[0],x[1],3));
-      const cyc = [goals.distance, goals.distance, goals.ground];
-      GGP_SLOTS.forEach((s,i)=>set(s,cyc[i%3],3));
-      HIGH_SLOTS.forEach((s,i)=>set(s,cyc[(i+1)%3],3));
     }
   }
+
   function geneStarsFor(nodeId, aptitude){
     const sourceMap = (typeof GENE_SOURCE_MAP2 !== 'undefined' ? GENE_SOURCE_MAP2 : null) || {
       target:['p1','p2','gp1a','gp1b','gp2a','gp2b'],
@@ -2678,6 +2811,7 @@
     warnings.push(...applyCoreSelections(goals));
     warnings.push(...fillDeepAncestors(goals));
     applyRedPattern(mode, goals);
+    warnings.push(...applyCoreAptitudeSupport(goals, mode));
     if (factorBlueprint.view) factorBlueprint.view.showHigh = true;
     if (typeof saveFactorBlueprint === 'function') saveFactorBlueprint();
     if (typeof renderFactorPlanner === 'function') renderFactorPlanner();
@@ -2701,7 +2835,7 @@
     box.id = 'geneAdvisorBox';
     box.className = 'gene-advisor-box';
     box.innerHTML = `<h3>인자 설계 추천</h3>
-      <p class="hint">목표 마장/거리/각질을 정하고, 부모·조부모 6칸은 직접 지정해. 추천안 버튼은 이 6칸은 유지하고 증조/고조부모와 적인자를 자동 세팅해.</p>
+      <p class="hint">목표 마장/거리/각질을 정하고, 부모·조부모 6칸은 직접 지정해. 추천안 버튼은 이 6칸은 유지하고 증조/고조부모와 적인자를 자동 세팅해. 부모/조부모는 잔디·더트 E 이상, 마일·중거리 C 이상, 장거리 C 이상을 우선 보정해.</p>
       <div class="gene-advisor-goals">
         <div><label>마장</label><select id="geneAdvisorGround">${makeOptions(GROUND_TYPES)}</select></div>
         <div><label>거리</label><select id="geneAdvisorDistance">${makeOptions(DIST_TYPES)}</select></div>
@@ -2709,7 +2843,7 @@
       </div>
       <div class="gene-core-picks">
         <div class="gene-core-picks-head">
-          <div><div class="gene-core-picks-title">부모/조부모 6칸 지정</div><div class="meta">같은 캐릭터는 양쪽 조부모 라인 중복은 허용 가능. 같은 부모 라인 중복은 경고로 표시해.</div></div>
+          <div><div class="gene-core-picks-title">부모/조부모 6칸 지정</div><div class="meta">같은 캐릭터는 양쪽 조부모 라인 중복은 허용 가능. 같은 부모 라인 중복은 경고로 표시해. 더트 F/G, 마일·중거리 D 이하는 증조/고조부모 적인자로 보정해.</div></div>
           <button class="btn small ghost" id="geneApplyCoreBtn" type="button">6칸 적용</button>
         </div>
         <div class="gene-core-picks-grid">
@@ -2757,6 +2891,168 @@
 })();
 </script>
 
+
+
+<script>
+/* 캐릭터 선택창 검색형 패치 + 추천 알고리즘 안내 보강 */
+(function(){
+  const css = `
+    .char-search-wrap{position:relative;width:100%;}
+    .char-search-input{width:100%;height:30px;border:1px solid var(--line);border-radius:9px;padding:5px 8px;font-size:11px;background:#fff;box-sizing:border-box;font-weight:800;color:#111827;}
+    .gene-core-picks .char-search-input{height:38px;font-size:14px;border-radius:12px;font-weight:700;}
+    .uma-card .char-search-input{height:28px;font-size:10px;padding:4px 6px;}
+    .char-search-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(91,95,240,.12);outline:none;}
+  `;
+  document.head.insertAdjacentHTML('beforeend', `<style>${css}</style>`);
+
+  function getChars(){
+    try { return (FACTOR_DATA?.chars || []).filter(c => c && c.id && c.name).slice().sort((a,b)=>String(a.name).localeCompare(String(b.name),'ko')); }
+    catch(e){ return []; }
+  }
+  function normText(v){ return String(v||'').replace(/\s+/g,'').toLowerCase(); }
+  function ensureDatalist(){
+    let dl = document.getElementById('factorCharSearchList');
+    if (!dl) {
+      dl = document.createElement('datalist');
+      dl.id = 'factorCharSearchList';
+      document.body.appendChild(dl);
+    }
+    const chars = getChars();
+    if (Number(dl.dataset.count||0) !== chars.length) {
+      dl.innerHTML = chars.map(c => `<option value="${String(c.name).replace(/"/g,'&quot;')}"></option>`).join('');
+      dl.dataset.count = String(chars.length);
+    }
+  }
+  function selectedName(sel){
+    const opt = sel.options && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
+    return (opt && opt.value) ? opt.textContent.replace(/\s*·\s*상성자료 없음\s*$/,'').trim() : '';
+  }
+  function chooseCharId(text){
+    const chars = getChars();
+    const q = normText(text);
+    if (!q) return '';
+    let exact = chars.find(c => normText(c.name) === q);
+    if (exact) return String(exact.id);
+    let starts = chars.find(c => normText(c.name).startsWith(q));
+    if (starts) return String(starts.id);
+    let inc = chars.find(c => normText(c.name).includes(q));
+    return inc ? String(inc.id) : '';
+  }
+  function searchifySelect(sel){
+    if (!sel || sel.dataset.noSearch === '1') return;
+    const isTarget = sel.matches('select.char-select') || /^geneCorePick_/.test(sel.id || '') || sel.id === 'factorTarget' || sel.id === 'factorTargetInCard';
+    if (!isTarget) return;
+    ensureDatalist();
+    let wrap = sel.nextElementSibling && sel.nextElementSibling.classList?.contains('char-search-wrap') ? sel.nextElementSibling : null;
+    if (!wrap) {
+      sel.style.display = 'none';
+      wrap = document.createElement('div');
+      wrap.className = 'char-search-wrap';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'char-search-input';
+      input.setAttribute('list','factorCharSearchList');
+      input.placeholder = '캐릭터 검색';
+      input.autocomplete = 'off';
+      wrap.appendChild(input);
+      sel.insertAdjacentElement('afterend', wrap);
+      const commit = () => {
+        const id = chooseCharId(input.value);
+        if (id && String(sel.value) !== id) {
+          sel.value = id;
+          sel.dispatchEvent(new Event('change', {bubbles:true}));
+        } else if (!input.value.trim() && sel.value) {
+          sel.value = '';
+          sel.dispatchEvent(new Event('change', {bubbles:true}));
+        }
+      };
+      input.addEventListener('change', commit);
+      input.addEventListener('blur', commit);
+      input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); commit(); input.blur(); } });
+      sel.addEventListener('change', () => { input.value = selectedName(sel); });
+    }
+    const input = wrap.querySelector('input');
+    if (input && document.activeElement !== input) input.value = selectedName(sel);
+  }
+  function searchifyAll(){
+    document.querySelectorAll('select.char-select, select[id^="geneCorePick_"], #factorTarget, #factorTargetInCard').forEach(searchifySelect);
+  }
+  const mo = new MutationObserver(()=>searchifyAll());
+  document.addEventListener('DOMContentLoaded', () => {
+    searchifyAll();
+    mo.observe(document.body, {childList:true, subtree:true});
+    setInterval(searchifyAll, 1200);
+  });
+  setTimeout(searchifyAll, 300);
+})();
+</script>
+
+
+
+<script>
+/* 세대별 적성 적용 범위 최종 보정 패치
+   - 본육성: 부모 2 + 조부모 4만 반영
+   - 부모: 조부모 2 + 증조부모 4만 반영
+   - 조부모: 증조부모 2 + 고조부모 4만 반영
+   - 증조부모/고조부모 인자는 본육성에 직접 반영하지 않음
+*/
+(function(){
+  const STRICT_FACTOR_ANCESTORS = {
+    target: ['p1','p2','gp1a','gp1b','gp2a','gp2b'],
+    p1: ['gp1a','gp1b','ggp1a1','ggp1a2','ggp1b1','ggp1b2'],
+    p2: ['gp2a','gp2b','ggp2a1','ggp2a2','ggp2b1','ggp2b2'],
+    gp1a: ['ggp1a1','ggp1a2','h1','h2','h3','h4'],
+    gp1b: ['ggp1b1','ggp1b2','h5','h6','h7','h8'],
+    gp2a: ['ggp2a1','ggp2a2','h9','h10','h11','h12'],
+    gp2b: ['ggp2b1','ggp2b2','h13','h14','h15','h16'],
+    ggp1a1: [], ggp1a2: [], ggp1b1: [], ggp1b2: [],
+    ggp2a1: [], ggp2a2: [], ggp2b1: [], ggp2b2: [],
+    h1: [], h2: [], h3: [], h4: [], h5: [], h6: [], h7: [], h8: [],
+    h9: [], h10: [], h11: [], h12: [], h13: [], h14: [], h15: [], h16: []
+  };
+  function strictSlotValue(id){
+    try { return (typeof slotValue === 'function') ? slotValue(id) : (factorBlueprint?.slots?.[id] || {}); }
+    catch(e){ return {}; }
+  }
+  function strictRedTotals(slotIds){
+    const totals = {};
+    (typeof FACTOR_TYPES !== 'undefined' ? FACTOR_TYPES : []).forEach(t => totals[t] = 0);
+    (slotIds || []).forEach(id => {
+      const s = strictSlotValue(id);
+      const type = s.redType || '';
+      const stars = Number(s.stars || 0);
+      if (type && Object.prototype.hasOwnProperty.call(totals, type)) totals[type] += stars;
+    });
+    return totals;
+  }
+  try {
+    if (typeof FACTOR_ANCESTOR_SLOTS !== 'undefined') {
+      Object.keys(STRICT_FACTOR_ANCESTORS).forEach(k => { FACTOR_ANCESTOR_SLOTS[k] = STRICT_FACTOR_ANCESTORS[k].slice(); });
+    }
+  } catch(e) { console.warn('strict ancestor map update failed', e); }
+  try {
+    finalAptForNode = function(slotId='target') {
+      const key = slotId || 'target';
+      const base = (typeof baseAptForNode === 'function') ? baseAptForNode(key) : {};
+      const sources = STRICT_FACTOR_ANCESTORS[key] || [];
+      const totals = strictRedTotals(sources);
+      const out = {};
+      (typeof FACTOR_TYPES !== 'undefined' ? FACTOR_TYPES : []).forEach(t => {
+        out[t] = (typeof inheritedApt === 'function') ? inheritedApt(base[t] || 'G', totals[t] || 0) : (base[t] || 'G');
+      });
+      return out;
+    };
+    finalAptByInheritance = function(){ return finalAptForNode('target'); };
+  } catch(e) { console.warn('strict final aptitude override failed', e); }
+  const rerender = () => {
+    try {
+      if (typeof renderFactorPlanner === 'function') renderFactorPlanner();
+    } catch(e) { console.warn('strict rerender failed', e); }
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => setTimeout(rerender, 100));
+  else setTimeout(rerender, 100);
+})();
+</script>
 
 </body>
 </html>
